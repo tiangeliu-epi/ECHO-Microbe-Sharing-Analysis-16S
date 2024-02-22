@@ -1,0 +1,1742 @@
+---
+title: "Shared ASV Analysis for OIF Aim 3"
+author: "Tiange Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",  
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+source("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/ANALYSIS/Codes/OIF_Function.r")
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+```
+
+# Read in covariates 
+```{r}
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_112923.csv")
+  # use October data lock
+
+# re-label some variables
+master_dt$birth_delivm <- as.factor(master_dt$birth_delivm)
+master_dt$birth_delivm <- factor(master_dt$birth_delivm, levels=c("-5", "1","2"), labels=c("Missing", "Vaginal delivery", "Cesarean delivery"))
+
+master_dt$med_antib_pn <- as.factor(master_dt$med_antib_pn)
+master_dt$med_antib_pn <- factor(master_dt$med_antib_pn, levels=c("-8", "0", "1"), labels=c("Missing", "No antibiotics", "Took antibiotics"))
+```
+
+# Import participant data that will be useful for the other four cohorts
+```{r}
+full_dta <- read.delim("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/m16s_der_hpc_0556a.tsv")
+
+table(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- as.factor(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- factor(full_dta$m16s_part_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+table(full_dta$m16s_spec_type)
+full_dta$body_site <- as.factor(full_dta$m16s_spec_type)
+full_dta$body_site <- factor(full_dta$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+```
+
+
+# VDAART
+```{r message=FALSE, warning=FALSE}
+vdaart <- read.csv(paste0(path,"Results/feast_12301_091123.csv"))
+vdaart <- select(vdaart, -(birth_delivm), -(med_antib_pn))
+vdaart <- merge(vdaart, master_dt[, c("ParticipantID.x", "birth_delivm", "med_antib_pn")], by.x="ParticipantID", by.y="ParticipantID.x",
+                all.x=TRUE)
+
+i_id <- vdaart
+m_id <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12301 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id$sample.id, 7, 15)))) %>%
+  select(sample.id)
+
+# Read in ASV table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/12301_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+
+## Determine and summarize sharing of each ASV for each infant 
+result <- aim3_asv_sharing_byinfant(asv_table, i_id, m_id)
+vdaart <- merge(vdaart, result$df1, by=c("sample.id"))
+vdaart$age <- ifelse(vdaart$m16s_age_yr<=0.5, "4 (2, 6)", ifelse(vdaart$m16s_age_yr>=0.83 & vdaart$m16s_age_yr<=1.25, "12 (10, 15)",
+                                    ifelse(vdaart$m16s_age_yr>=2.83 & vdaart$m16s_age_yr<=3.25, "36 (34, 39)", "48 (47, 51)")))
+
+## Determine and summarize sharing of each ASV across infants grouped by age
+i_id_1 <- vdaart %>% filter(m16s_age_yr<=0.5)
+junk1 <- aim3_asv_sharing_byasv(asv_table, i_id_1, result)
+junk1$age <- "4 (2, 6)"
+
+i_id_2 <- vdaart %>% filter(m16s_age_yr>=0.83 & m16s_age_yr<=1.25) 
+junk2 <- aim3_asv_sharing_byasv(asv_table, i_id_2, result)
+junk2$age <- "12 (10, 15)"
+
+i_id_3 <- vdaart %>% filter(m16s_age_yr>=2.83 & m16s_age_yr<=3.25)
+junk3 <- aim3_asv_sharing_byasv(asv_table, i_id_3, result)
+junk3$age <- "36 (34, 39)"
+
+i_id_4 <- vdaart %>% filter(m16s_age_yr>=3.92 & m16s_age_yr<=4.25) 
+junk4 <- aim3_asv_sharing_byasv(asv_table, i_id_4, result)
+junk4$age <- "48 (47, 51)"
+
+vdaart_asv <- rbind(junk1, junk2, junk3, junk4)
+vdaart_asv$cohort <- "VDAART"
+```
+
+# RESONANCE
+```{r message=FALSE, warning=FALSE}
+resonance <- read.csv(paste0(path,"Results/feast_10703_091123.csv"))
+resonance <- select(resonance, -(birth_delivm), -(med_antib_pn))
+resonance <- merge(resonance, master_dt[, c("ParticipantID.x", "birth_delivm", "med_antib_pn")], 
+                   by.x="ParticipantID", by.y="ParticipantID.x", all.x=TRUE)
+
+
+i_id <- resonance
+m_id <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==10703 &
+                              (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id$sample.id, 7, 15)))) %>%
+    mutate(prefix = substr(sample.id, 7, 15)) %>%
+    group_by(prefix) %>%
+    slice_tail(n = 1) %>%   # only keep the last observation for each mother
+    select(sample.id)
+m_id <- m_id[, c(-1)]
+
+
+# Read in ASV table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/10703_asv_table_classic.tsv")
+
+
+## Determine and summarize sharing of each ASV for each infant 
+result <- aim3_asv_sharing_byinfant(asv_table, i_id, m_id)
+resonance <- merge(resonance, result$df1, by=c("sample.id"))
+
+## Determine and summarize sharing of each ASV across infants grouped by age
+i_id_1 <- resonance %>% filter(m16s_age_yr<=0.25)
+junk1 <- aim3_asv_sharing_byasv(asv_table, i_id_1, result)
+junk1$age <- paste0(round(mean(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), ")")
+
+i_id_2 <- resonance %>% filter(m16s_age_yr>=0.33 & m16s_age_yr<=0.67) 
+junk2 <- aim3_asv_sharing_byasv(asv_table, i_id_2, result)
+junk2$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), ")")
+
+i_id_3 <- resonance %>% filter(m16s_age_yr>=0.75 & m16s_age_yr<=1.58)
+junk3 <- aim3_asv_sharing_byasv(asv_table, i_id_3, result)
+junk3$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), ")")
+
+i_id_4 <- resonance %>% filter(m16s_age_yr>=1.67 & m16s_age_yr<=3.42) 
+junk4 <- aim3_asv_sharing_byasv(asv_table, i_id_4, result)
+junk4$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), ")")
+
+resonance_asv <- rbind(junk1, junk2, junk3, junk4)
+resonance_asv$cohort <- "RESONANCE"
+
+resonance$age <- ifelse(resonance$m16s_age_yr<=0.25, paste0(junk1$age[1]), 
+                        ifelse(resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67, paste0(junk2$age[1]),
+                               ifelse(resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58, paste0(junk3$age[1]),
+                                      paste0(junk4$age[1]))))
+```
+
+
+# WISC
+```{r message=FALSE, warning=FALSE}
+wisc <- read.csv(paste0(path,"Results/feast_11305_091123.csv"))
+wisc <- select(wisc, -(birth_delivm), -(med_antib_pn))
+wisc <- merge(wisc, master_dt[, c("ParticipantID.x", "birth_delivm", "med_antib_pn")], 
+                   by.x="ParticipantID", by.y="ParticipantID.x", all.x=TRUE)
+
+i_id <- wisc
+m_id <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==11305 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id$sample.id, 7, 15)))) %>%
+  select(sample.id)
+
+# Read in ASV table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/11305_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+
+## Determine and summarize sharing of each ASV for each infant 
+result <- aim3_asv_sharing_byinfant(asv_table, i_id, m_id)
+wisc <- merge(wisc, result$df1, by=c("sample.id"))
+
+## Determine and summarize sharing of each ASV across infants grouped by age
+i_id_1 <- wisc %>% filter(m16s_age_yr<=0.17)
+junk1 <- aim3_asv_sharing_byasv(asv_table, i_id_1, result)
+junk1$age <- paste0(round(mean(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), " (",
+                          round(min(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), ", ",
+                          round(max(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), ")")
+
+
+i_id_2 <- wisc %>% filter(m16s_age_yr>=0.5 & m16s_age_yr<=0.92) 
+junk2 <- aim3_asv_sharing_byasv(asv_table, i_id_2, result)
+junk2$age <- paste0(round(mean(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), " (",
+                          round(min(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), ", ",
+                          round(max(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), ")")
+
+wisc_asv <- rbind(junk1, junk2)
+wisc_asv$cohort <- "WISC"
+
+wisc$age <- ifelse(wisc$m16s_age_yr<=0.17, paste0(junk1$age[1]), paste0(junk2$age[1]))
+```
+
+
+# Rochester
+```{r message=FALSE, warning=FALSE}
+rochester <- read.csv(paste0(path,"Results/feast_12601_091123.csv"))
+rochester <- select(rochester, -(birth_delivm), -(med_antib_pn))
+rochester <- merge(rochester, master_dt[, c("ParticipantID.x", "birth_delivm", "med_antib_pn")], 
+                   by.x="ParticipantID", by.y="ParticipantID.x", all.x=TRUE)
+
+i_id <- rochester
+m_id <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12601 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id$sample.id, 7, 15)))) %>%
+  select(sample.id)
+
+# Read in ASV table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/12601_asv_table_classic.tsv")
+
+
+## Determine and summarize sharing of each ASV for each infant 
+result <- aim3_asv_sharing_byinfant(asv_table, i_id, m_id)
+rochester <- merge(rochester, result$df1, by=c("sample.id"))
+
+## Determine and summarize sharing of each ASV across infants grouped by age
+i_id_1 <- rochester %>% filter(m16s_age_yr<=0.17)
+junk1 <- aim3_asv_sharing_byasv(asv_table, i_id_1, result)
+junk1$age <- paste0(round(mean(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), ")")
+
+
+i_id_2 <- rochester %>% filter(m16s_age_yr>=0.42 & m16s_age_yr<=0.75) 
+junk2 <- aim3_asv_sharing_byasv(asv_table, i_id_2, result)
+junk2$age <- paste0(round(mean(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), ")")
+
+i_id_3 <- rochester %>% filter(m16s_age_yr>=0.83 & m16s_age_yr<=1.5) 
+junk3 <- aim3_asv_sharing_byasv(asv_table, i_id_3, result)
+junk3$age <- paste0(round(mean(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), ")")
+
+
+rochester_asv <- rbind(junk1, junk2, junk3)
+rochester_asv$cohort <- "Rochester"
+
+rochester$age <- ifelse(rochester$m16s_age_yr<=0.17, paste0(junk1$age[1]), 
+                        ifelse(rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75, paste0(junk2$age[1]),
+                                      paste0(junk3$age[1])))
+```
+
+
+# Summarize and visualize child-mother ASV sharing based on results from FEAST and raw ASV
+```{r}
+sum1 <- rbind(vdaart, resonance, wisc, rochester)
+sum1$shared_prop <- sum1$shared/sum1$sum_infant * 100 
+sum1$shared_prop_0.01 <- sum1$shared_0.01/sum1$sum_infant_0.01 * 100 
+sum1 <- filter(sum1, !is.na(m16s_age_yr))
+
+sum1$age <- factor(sum1$age, levels=c("1 (0, 2)", "2 (1, 2)", "2 (1, 3)", "4 (2, 6)", "5 (4, 8)", "6 (5, 9)", "9 (6, 11)",
+                                      "12 (10, 15)", "12 (10, 18)", "13 (10, 19)", "32 (20, 41)", "36 (34, 39)", "48 (47, 51)"),
+                   labels=c("1 (0, 2)\nn=48", "2 (1, 2)\nn=127", "2 (1, 3)\nn=41", "4 (2, 6)\nn=75", "5 (4, 8)\nn=25", "6 (5, 9)\nn=87", 
+                            "9 (6, 11)\nn=125",
+                            "12 (10, 15)\nn=97", "12 (10, 18)\nn=88", "13 (10, 19)\nn=24", 
+                            "32 (20, 41)\nn=13", "36 (34, 39)\nn=74", "48 (47, 51)\nn=56")) 
+
+sum1$cohort <- factor(sum1$cohort, levels=c("RESONANCE", "VDAART","WISC", "ROCHESTER"), 
+                      labels=c("RESONANCE", "VDAART", "WISC", "Rochester"))
+
+sum1$birth_delivm <- factor(sum1$birth_delivm, levels=c("Vaginal delivery", "Cesarean delivery", "Missing"),
+                            labels=c("Vaginal", "C-section", "Missing"))
+
+sum1$med_antib_pn <- factor(sum1$med_antib_pn, levels=c("No antibiotics", "Took antibiotics"), labels=c("No", "Yes"))
+
+sum1 <- sum1 %>%
+  group_by(cohort, age) %>%
+  mutate(mean_contri = mean(contribution), mean_prop = mean(shared_prop), mean_prop_0.01 = mean(shared_prop_0.01), sample_size=n())
+
+# Reshape data from wide to long
+data_long_mean <- sum1 %>%
+  select(sample.id, cohort, age, sample_size, birth_delivm, med_antib_pn, mean_contri, mean_prop, mean_prop_0.01) %>%
+  pivot_longer(cols = c(mean_contri, mean_prop, mean_prop_0.01), names_to = "group", values_to = "mean") 
+data_long_mean$group <- factor(data_long_mean$group, levels=c("mean_contri", "mean_prop", "mean_prop_0.01"), 
+                               labels=c("Source tracking", "ASV sharing", "ASV sharing 2"))
+
+data_long_prop <- sum1 %>%
+  select(sample.id, cohort, age, sample_size, birth_delivm, med_antib_pn, contribution, shared_prop, shared_prop_0.01) %>%
+  pivot_longer(cols = c(contribution, shared_prop, shared_prop_0.01), names_to = "group", values_to = "prop")
+data_long_prop$group <- factor(data_long_prop$group, levels=c("contribution", "shared_prop", "shared_prop_0.01"), 
+                               labels=c("Source tracking", "ASV sharing", "ASV sharing 2"))
+
+sum1_long <- left_join(data_long_mean, data_long_prop, by = c("sample.id", "cohort", "age", "group", "sample_size", "birth_delivm", "med_antib_pn"))
+```
+
+## Overall
+```{r fig.width=8, fig.height=7.5}
+# Create a numeric representation for the age factor
+sum1_long$age_numeric <- as.numeric(str_extract(as.character(sum1_long$age), "^[^(]+"))
+
+get_significance_symbol <- function(p_value) {
+  if(p_value < 0.001) {
+    return("***")
+  } else if(p_value < 0.01) {
+    return("**")
+  } else if(p_value < 0.05) {
+    return("*")
+  } else if(p_value < 0.1) {
+    return("+")
+  } else {
+    return("")
+  }
+}
+
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- sum1_long %>%
+  group_by(cohort, group) %>%
+  do({
+    cur_data <- .
+    ages_sorted <- sort(unique(cur_data$age_numeric))
+    
+    significance_results <- data.frame()
+    
+    for (i in 2:(length(ages_sorted))) {
+      current_age <- ages_sorted[i]
+      first_age <- ages_sorted[1]
+
+      current_age_data <- cur_data[cur_data$age_numeric == current_age, ]
+      first_age_data <- cur_data[cur_data$age_numeric == first_age, ]
+
+      test_result <- wilcox.test(current_age_data$prop, first_age_data$prop, paired = FALSE, exact = FALSE)
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- rbind(significance_results, data.frame(age_numeric = current_age, significance = significance))
+    }
+    
+    significance_results
+  })
+
+fig <- merge(sum1_long, comparison_results, by = c("cohort", "group", "age_numeric"), all.x = TRUE)
+fig$significance <- ifelse(is.na(fig$significance), "", fig$significance)
+
+p1<- 
+  fig[fig$group!="ASV sharing 2" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group), position=position_dodge(width = .3),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3) +
+  facet_grid(cols = vars(cohort), scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Fecal Microbiota", color="Analytic Method") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = mean-10, label = significance, color=group), size=7, position=position_dodge(width = .3)) +
+  scale_color_manual(values=color6)
+
+
+p2<- 
+  fig[fig$group!="ASV sharing 2" & (fig$cohort=="Rochester" | fig$cohort=="WISC"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group), position=position_dodge(width = .3),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3) +
+  facet_grid(cols = vars(cohort), scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Vaginal Microbiota", color="Analytic Method") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = mean-5, label = significance, color=group), size=7, position=position_dodge(width = .3), vjust=1) +
+  scale_color_manual(values=color6) 
+
+p <- ggarrange(NULL, p1, NULL, p2, nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          common.legend = TRUE, legend = "bottom", 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_sharing_overall_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 7.5, width = 8, units = "in", dpi = 500)
+
+fig_overall_dta <- fig
+```
+
+## By delivery mode
+```{r fig.height=7.5, fig.width=8, message=FALSE, warning=FALSE}
+test_results <- sum1_long %>%
+  filter(birth_delivm %in% c("Vaginal", "C-section")) %>%
+  group_by(cohort, age, group) %>%
+  summarize(p_value = wilcox.test(prop[birth_delivm == "Vaginal"], prop[birth_delivm == "C-section"], exact = FALSE)$p.value) %>%
+  ungroup()
+
+test_results <- test_results %>%
+  mutate(significance = case_when(
+    p_value < 0.001 ~ "***",
+    p_value < 0.01  ~ "**",
+    p_value < 0.05  ~ "*",
+    p_value < 0.1   ~ "+",
+    TRUE            ~ ""
+  ))
+
+# Join the p-values to your original data
+fig <- left_join(sum1_long, test_results, by = c("cohort", "age", "group"))
+fig <- filter(fig, !is.na(birth_delivm) & birth_delivm!="Missing")
+
+p1<- 
+  fig[fig$group!="ASV sharing 2" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=birth_delivm), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Fecal Microbiota", color="Analytic Method", shape="Delivery Mode") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background =element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+  
+p2<- 
+  fig[fig$group!="ASV sharing 2" & (fig$cohort=="Rochester" | fig$cohort=="WISC"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=birth_delivm), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Vaginal Microbiota", color="Analytic Method", shape="Delivery Mode") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background =element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+
+p <- ggarrange(NULL, p1, NULL, p2, nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          common.legend = TRUE, legend = "bottom", 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_sharing_deliverymode_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 7.5, width = 8, units = "in", dpi = 500)
+
+fig_delivery_dta <- fig
+
+```
+
+## By prenatal antibiotics
+```{r fig.height=7.5, fig.width=8, message=FALSE, warning=FALSE}
+test_results <- sum1_long %>%
+  filter(med_antib_pn %in% c("No", "Yes")) %>%
+  group_by(cohort, age, group) %>%
+  summarize(p_value = wilcox.test(prop[med_antib_pn == "No"], prop[med_antib_pn == "Yes"], exact = FALSE)$p.value) %>%
+  ungroup()
+
+test_results <- test_results %>%
+  mutate(significance = case_when(
+    p_value < 0.001 ~ "***",
+    p_value < 0.01  ~ "**",
+    p_value < 0.05  ~ "*",
+    p_value < 0.1   ~ "+",
+    TRUE            ~ ""
+  ))
+
+# Join the p-values to your original data
+fig <- left_join(sum1_long, test_results, by = c("cohort", "age", "group"))
+fig <- filter(fig, !is.na(med_antib_pn))
+
+p1<- 
+  fig[fig$group!="ASV sharing 2" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=med_antib_pn), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Fecal Microbiota",
+       color="Analytic Method", shape="Prenatal Antibiotic Use") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+  
+p2<- 
+  fig[fig$group!="ASV sharing 2" & (fig$cohort=="Rochester" | fig$cohort=="WISC"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=med_antib_pn), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Vaginal Microbiota", color="Analytic Method", shape="Prenatal Antibiotic Use") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+
+p <- ggarrange(NULL, p1, NULL, p2, nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          common.legend = TRUE, legend = "bottom", 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+    ggsave(p, filename = "Aim3_sharing_antibiotics_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 7.5, width = 8, units = "in", dpi = 500)
+
+fig_antib_dta <- fig
+
+```
+
+
+
+# Summarize and visualize child-mother ASV sharing based on results from FEAST and ASV after accounting for sequencing depth
+## Overall
+```{r fig.height=7.5, fig.width=8, message=FALSE, warning=FALSE}
+fig <- fig_overall_dta
+
+p1<- 
+  fig[fig$group!="ASV sharing" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group), position=position_dodge(width = .3),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3) +
+  facet_grid(cols = vars(cohort), scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Fecal Microbiota", color="Analytic Method") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = mean-10, label = significance, color=group), size=7, position=position_dodge(width = .3)) +
+  scale_color_manual(values=color6)
+
+
+p2<- 
+  fig[fig$group!="ASV sharing" & (fig$cohort=="Rochester" | fig$cohort=="WISC"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group), position=position_dodge(width = .3),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3) +
+  facet_grid(cols = vars(cohort), scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Vaginal Microbiota", color="Analytic Method") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = mean-5, label = significance, color=group), size=7, position=position_dodge(width = .3), vjust=1) +
+  scale_color_manual(values=color6) 
+
+p <- ggarrange(NULL, p1, NULL, p2, nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          common.legend = TRUE, legend = "bottom", 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_sharing_overall_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 7.5, width = 8, units = "in", dpi = 500)
+
+```
+
+## By delivery mode
+```{r fig.height=7.5, fig.width=8, message=FALSE, warning=FALSE}
+fig <- fig_delivery_dta
+
+p1<- 
+  fig[fig$group!="ASV sharing" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=birth_delivm), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Fecal Microbiota", color="Analytic Method", shape="Delivery Mode") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+  
+p2<- 
+  fig[fig$group!="ASV sharing" & (fig$cohort=="Rochester" | fig$cohort=="WISC"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=birth_delivm), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Vaginal Microbiota", color="Analytic Method", shape="Delivery Mode") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+
+p <- ggarrange(NULL, p1, NULL, p2, nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          common.legend = TRUE, legend = "bottom", 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_sharing_deliverymode_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 7.5, width = 8, units = "in", dpi = 500)
+
+```
+
+## By prenatal antibiotics
+```{r fig.height=7.5, fig.width=8, message=FALSE, warning=FALSE}
+fig <- fig_antib_dta
+
+p1<- 
+  fig[fig$group!="ASV sharing" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=med_antib_pn), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Fecal Microbiota",
+       color="Analytic Method", shape="Prenatal Antibiotic Use") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+  
+p2<- 
+  fig[fig$group!="ASV sharing" & (fig$cohort=="Rochester" | fig$cohort=="WISC"), ] %>%
+  ggplot() +
+  stat_summary(aes(x=age, y=prop, color=group, shape=med_antib_pn), position=position_dodge2(width = .8, preserve = "single"),
+               fun.data = "mean_cl_boot", geom = "pointrange",  fun.args=list(conf.int=0.95), size=1, fatten=3.5) +
+  facet_grid(cols = vars(cohort),  scales = "free", space = "free_x") +
+  labs(x="Child's Age in Months, Mean (Range)", 
+       y="Proportion (%) of Child's Microbiota\nShared with Maternal Vaginal Microbiota", color="Analytic Method", shape="Prenatal Antibiotic Use") +
+  scale_y_continuous(limits = c(0, 100)) +
+  theme_bw() +
+  theme(axis.text = element_text(size=11), axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "right", legend.text = element_text(size=12), legend.title = element_text(size=12),
+        strip.background = element_rect(fill="white")) +
+  geom_text(aes(x = age, y = 95, label = significance, color=group), size=7, position = position_dodge(width = .8)) +
+  scale_color_manual(values=color6) + scale_shape_manual(values = c(18, 17)) 
+
+p <- ggarrange(NULL, p1, NULL, p2, nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          common.legend = TRUE, legend = "bottom", 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+    ggsave(p, filename = "Aim3_sharing_antibiotics_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 7.5, width = 8, units = "in", dpi = 500)
+
+```
+
+
+# Summarize and visualize child-mother sharing of Bifidobacterium using raw ASV 
+```{r}
+sum2 <- rbind(vdaart_asv, resonance_asv, rochester_asv, wisc_asv)
+
+table(sum2[sum2$genus=="Bifidobacterium" & sum2$shared>0 & sum2$variable=="Overall",]$name_md5, 
+      sum2[sum2$genus=="Bifidobacterium" & sum2$shared>0 & sum2$variable=="Overall",]$cohort)
+  # no common ASV across RESONANCE, VDAART, WISC
+  # no common ASV with MARCH
+
+# something is wrong with rochester taxonomy: shared ASVs belong to Eukaryota or Unassigned domain
+table(rochester_asv[rochester_asv$shared>0 & rochester_asv$variable=="Overall",]$domain)
+   # Eukaryota Unassigned 
+   #    197        197
+table(rochester_asv$domain)
+table(rochester_asv[(rochester_asv$genus=="Bifidobacterium" | rochester_asv$genus=="Bacteroides") & rochester_asv$not_shared>0,]$genus)
+
+table(sum2[(sum2$genus=="Bifidobacterium" | sum2$genus=="Bacteroides") & sum2$not_shared>0 & sum2$variable=="Overall",]$genus, sum2[(sum2$genus=="Bifidobacterium" | sum2$genus=="Bacteroides") & sum2$not_shared>0 & sum2$variable=="Overall",]$cohort)
+
+
+table(sum2[sum2$shared>0,]$genus, sum2[sum2$shared>0,]$cohort)
+
+
+
+sum2$age <- factor(sum2$age, levels=c("1 (0, 2)", "2 (1, 2)", "2 (1, 3)", "4 (2, 6)", "5 (4, 8)", "6 (5, 9)", "9 (6, 11)",
+                                      "12 (10, 15)", "12 (10, 18)", "13 (10, 19)", "32 (20, 41)", "36 (34, 39)", "48 (47, 51)"))
+
+
+bifido_dta <- sum2 %>%
+  filter(genus=="Bifidobacterium")
+
+asv_dta <-  bifido_dta %>%
+    mutate(sum_n=shared + not_shared, sum_n_0.01=shared_0.01 + not_shared_0.01)
+  
+asv_dta <- asv_dta %>% 
+    group_by(cohort, age, variable) %>%
+    summarise(n_detectable=sum(sum_n>0), n_detectable_0.01=sum(sum_n_0.01>0),
+              n_shared=sum(shared>0), n_not_shared=sum(sum_n>0) - sum(shared>0))
+  
+uplimt <- max(asv_dta$n_detectable) + 1
+  
+fig_dta <- gather(asv_dta, type, n_pair, n_shared:n_not_shared, factor_key=TRUE)
+fig_dta$prop <- fig_dta$n_pair / fig_dta$n_detectable * 100
+fig_dta$type <- factor(fig_dta$type, levels=c("n_not_shared", "n_shared"), labels=c("Not shared", "Shared"))
+
+# Create a numeric representation for the age factor
+fig_dta$age_numeric <- as.numeric(str_extract(as.character(fig_dta$age), "^[^(]+"))
+fig_dta <- fig_dta %>%
+  group_by(cohort) %>%
+  mutate(age_junk = as.numeric(as.factor(age_numeric)))
+
+```
+
+## Overall (not significant)
+```{r fig.height=8, fig.width=6.7, message=FALSE}
+get_significance_symbol <- function(p_value) {
+  if(p_value < 0.001) {
+    return("***")
+  } else if(p_value < 0.01) {
+    return("**")
+  } else if(p_value < 0.05) {
+    return("*")
+  } else if(p_value < 0.1) {
+    return("+")
+  } else {
+    return("")
+  }
+}
+
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",] %>%
+  group_by(cohort) %>%
+  do({
+    cur_data <- .
+    ages_sorted <- sort(unique(cur_data$age_numeric))
+    
+    significance_results <- data.frame()
+    
+    for (i in 2:(length(ages_sorted))) {
+      current_age <- ages_sorted[i]
+      first_age <- ages_sorted[1]
+
+      current_age_data <- cur_data[cur_data$age_numeric == current_age, ]
+      first_age_data <- cur_data[cur_data$age_numeric == first_age, ]
+
+      test_result <- fisher.test(matrix(c(current_age_data[current_age_data$type=="Shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Shared",]$n_pair, 
+                                          current_age_data[current_age_data$type=="Not shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Not shared",]$n_pair), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- rbind(significance_results, data.frame(age_numeric = current_age, significance = significance))
+    }
+    
+    significance_results
+  })
+
+fig <- merge(fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",], comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+p1 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", size=0.2) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number amd Proportion of ASVs") +
+    theme_bw()+   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p2 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="WISC") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", width=0.5) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw()+   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.9)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bifido_overall_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 6.7, units = "in", dpi = 500)
+
+```
+
+## By delivery mode (not significant)
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="C-section" | variable=="Vaginal") & cohort!="Rochester") %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "Vaginal" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Vaginal" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="C-section" | fig_dta$variable=="Vaginal", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - 0.17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bifido_deliverymode_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+
+## By antibiotics (not significant)
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="No" | variable=="Yes") & (cohort=="RESONANCE" | cohort=="WISC")) %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "No" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "No" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="No" | fig_dta$variable=="Yes", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bifido_antibiotics_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+
+
+# Summarize and visualize child-mother sharing of Bifidobacterium using adjusted ASV 
+```{r}
+sum2 <- rbind(vdaart_asv, resonance_asv, rochester_asv, wisc_asv)
+
+table(sum2[sum2$genus=="Bifidobacterium" & sum2$shared_0.01>0 & sum2$variable=="Overall",]$name_md5, 
+      sum2[sum2$genus=="Bifidobacterium" & sum2$shared_0.01>0 & sum2$variable=="Overall",]$cohort)
+  # no common ASV across RESONANCE, VDAART, WISC
+  # no common ASV with MARCH
+
+# something is wrong with rochester taxonomy: shared ASVs belong to Eukaryota or Unassigned domain
+table(rochester_asv[rochester_asv$shared_0.01>0,]$domain)
+   # Eukaryota Unassigned 
+   #    327        347
+table(rochester_asv$domain)
+
+
+sum2$age <- factor(sum2$age, levels=c("1 (0, 2)", "2 (1, 2)", "2 (1, 3)", "4 (2, 6)", "5 (4, 8)", "6 (5, 9)", "9 (6, 11)",
+                                      "12 (10, 15)", "12 (10, 18)", "13 (10, 19)", "32 (20, 41)", "36 (34, 39)", "48 (47, 51)"))
+
+
+bifido_dta <- sum2 %>%
+  filter(genus=="Bifidobacterium")
+
+asv_dta <-  bifido_dta %>%
+    mutate(sum_n=shared + not_shared, sum_n_0.01=shared_0.01 + not_shared_0.01)
+  
+asv_dta <- asv_dta %>% 
+    group_by(cohort, age, variable) %>%
+    summarise(n_detectable=sum(sum_n>0), n_detectable_0.01=sum(sum_n_0.01>0),
+              n_shared=sum(shared_0.01>0), n_not_shared=sum(sum_n_0.01>0) - sum(shared_0.01>0)) # note change in this line
+  
+
+fig_dta <- gather(asv_dta, type, n_pair, n_shared:n_not_shared, factor_key=TRUE)
+fig_dta$prop <- fig_dta$n_pair / fig_dta$n_detectable_0.01 * 100 # note change in this line
+fig_dta$type <- factor(fig_dta$type, levels=c("n_not_shared", "n_shared"), labels=c("Not shared", "Shared"))
+
+# Create a numeric representation for the age factor
+fig_dta$age_numeric <- as.numeric(str_extract(as.character(fig_dta$age), "^[^(]+"))
+fig_dta <- fig_dta %>%
+  group_by(cohort) %>%
+  mutate(age_junk = as.numeric(as.factor(age_numeric)))
+
+```
+
+## Overall (not significant)
+```{r fig.height=8, fig.width=6.7, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",] %>%
+  group_by(cohort) %>%
+  do({
+    cur_data <- .
+    ages_sorted <- sort(unique(cur_data$age_numeric))
+    
+    significance_results <- data.frame()
+    
+    for (i in 2:(length(ages_sorted))) {
+      current_age <- ages_sorted[i]
+      first_age <- ages_sorted[1]
+
+      current_age_data <- cur_data[cur_data$age_numeric == current_age, ]
+      first_age_data <- cur_data[cur_data$age_numeric == first_age, ]
+
+      test_result <- fisher.test(matrix(c(current_age_data[current_age_data$type=="Shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Shared",]$n_pair, 
+                                          current_age_data[current_age_data$type=="Not shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Not shared",]$n_pair), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- rbind(significance_results, data.frame(age_numeric = current_age, significance = significance))
+    }
+    
+    significance_results
+  })
+
+fig <- merge(fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",], comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+p1 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", size=0.2) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number amd Proportion of ASVs") +
+    theme_bw()+   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p2 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="WISC") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", width=0.5) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw()+   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.9)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bifido_overall_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 6.7, units = "in", dpi = 500)
+
+```
+
+## By delivery mode (not significant)
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="C-section" | variable=="Vaginal") & cohort!="Rochester") %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "Vaginal" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Vaginal" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="C-section" | fig_dta$variable=="Vaginal", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - 0.17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bifido_deliverymode_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+
+## By antibiotics (not significant)
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="No" | variable=="Yes") & (cohort=="RESONANCE" | cohort=="WISC")) %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "No" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "No" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="No" | fig_dta$variable=="Yes", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)),  
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bifido_antibiotics_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+# Summarize and visualize child-mother sharing of Bacteroides using raw ASV
+```{r}
+table(sum2[sum2$genus=="Bacteroides" & sum2$shared>0 & sum2$variable=="Overall",]$name_md5, 
+      sum2[sum2$genus=="Bacteroides" & sum2$shared>0 & sum2$variable=="Overall",]$cohort)
+  # no common ASV across RESONANCE, VDAART, WISC
+  # no common ASV with MARCH
+
+bac_dta <- sum2 %>%
+  filter(genus=="Bacteroides")
+
+asv_dta <-  bac_dta %>%
+    mutate(sum_n=shared + not_shared, sum_n_0.01=shared_0.01 + not_shared_0.01)
+  
+asv_dta <- asv_dta %>% 
+    group_by(cohort, age, variable) %>%
+    summarise(n_detectable=sum(sum_n>0), n_detectable_0.01=sum(sum_n_0.01>0),
+              n_shared=sum(shared>0), n_not_shared=sum(sum_n>0) - sum(shared>0))
+  
+uplimt <- max(asv_dta$n_detectable) + 1
+  
+fig_dta <- gather(asv_dta, type, n_pair, n_shared:n_not_shared, factor_key=TRUE)
+fig_dta$prop <- fig_dta$n_pair / fig_dta$n_detectable * 100
+fig_dta$type <- factor(fig_dta$type, levels=c("n_not_shared", "n_shared"), labels=c("Not shared", "Shared"))
+
+# Create a numeric representation for the age factor
+fig_dta$age_numeric <- as.numeric(str_extract(as.character(fig_dta$age), "^[^(]+"))
+fig_dta <- fig_dta %>%
+  group_by(cohort) %>%
+  mutate(age_junk = as.numeric(as.factor(age_numeric)))
+
+```
+
+
+## Overall
+```{r fig.height=8, fig.width=6.7, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",] %>%
+  group_by(cohort) %>%
+  do({
+    cur_data <- .
+    ages_sorted <- sort(unique(cur_data$age_numeric))
+    
+    significance_results <- data.frame()
+    
+    for (i in 2:(length(ages_sorted))) {
+      current_age <- ages_sorted[i]
+      first_age <- ages_sorted[1]
+
+      current_age_data <- cur_data[cur_data$age_numeric == current_age, ]
+      first_age_data <- cur_data[cur_data$age_numeric == first_age, ]
+
+      test_result <- fisher.test(matrix(c(current_age_data[current_age_data$type=="Shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Shared",]$n_pair, 
+                                          current_age_data[current_age_data$type=="Not shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Not shared",]$n_pair), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- rbind(significance_results, data.frame(age_numeric = current_age, significance = significance))
+    }
+    
+    significance_results
+  })
+
+fig <- merge(fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",], comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+fig$significance <- ifelse(fig$type=="Not shared", "", fig$significance)
+
+p1 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", size=0.2) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number amd Proportion of ASVs") +
+    geom_text(aes(x = age, y = max(n_pair), label = significance), size=7) +
+    theme_bw()+   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p2 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="WISC") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", width=0.5) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    geom_text(aes(x = age, y = max(n_pair), label = significance), size=7) +
+    theme_bw()+   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.9)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bacteroides_overall_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 6.7, units = "in", dpi = 500)
+
+```
+
+## By delivery mode (not significant)
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="C-section" | variable=="Vaginal") & cohort!="Rochester") %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "Vaginal" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Vaginal" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="C-section" | fig_dta$variable=="Vaginal", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - 0.17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bacteroides_deliverymode_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+
+## By antibiotics
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="No" | variable=="Yes") & (cohort=="RESONANCE" | cohort=="WISC")) %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "No" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "No" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="No" | fig_dta$variable=="Yes", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    geom_text(aes(x = age_junk, y = max(n_pair), label = significance), size=7) +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)),
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bacteroides_antibiotics_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+
+# Summarize and visualize child-mother sharing of Bacteroides using adjusted ASV
+```{r}
+table(sum2[sum2$genus=="Bacteroides" & sum2$shared_0.01>0 & sum2$variable=="Overall",]$name_md5, 
+      sum2[sum2$genus=="Bacteroides" & sum2$shared_0.01>0 & sum2$variable=="Overall",]$cohort)
+  # no common ASV across RESONANCE, VDAART, WISC
+  # no common ASV with MARCH
+
+bac_dta <- sum2 %>%
+  filter(genus=="Bacteroides")
+
+asv_dta <-  bac_dta %>%
+    mutate(sum_n=shared + not_shared, sum_n_0.01=shared_0.01 + not_shared_0.01)
+  
+asv_dta <- asv_dta %>% 
+    group_by(cohort, age, variable) %>%
+    summarise(n_detectable=sum(sum_n>0), n_detectable_0.01=sum(sum_n_0.01>0),
+              n_shared=sum(shared_0.01>0), n_not_shared=sum(sum_n_0.01>0) - sum(shared_0.01>0))
+  
+
+fig_dta <- gather(asv_dta, type, n_pair, n_shared:n_not_shared, factor_key=TRUE)
+fig_dta$prop <- fig_dta$n_pair / fig_dta$n_detectable_0.01 * 100
+fig_dta$type <- factor(fig_dta$type, levels=c("n_not_shared", "n_shared"), labels=c("Not shared", "Shared"))
+
+# Create a numeric representation for the age factor
+fig_dta$age_numeric <- as.numeric(str_extract(as.character(fig_dta$age), "^[^(]+"))
+fig_dta <- fig_dta %>%
+  group_by(cohort) %>%
+  mutate(age_junk = as.numeric(as.factor(age_numeric)))
+
+```
+
+
+## Overall
+```{r fig.height=8, fig.width=6.7, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",] %>%
+  group_by(cohort) %>%
+  do({
+    cur_data <- .
+    ages_sorted <- sort(unique(cur_data$age_numeric))
+    
+    significance_results <- data.frame()
+    
+    for (i in 2:(length(ages_sorted))) {
+      current_age <- ages_sorted[i]
+      first_age <- ages_sorted[1]
+
+      current_age_data <- cur_data[cur_data$age_numeric == current_age, ]
+      first_age_data <- cur_data[cur_data$age_numeric == first_age, ]
+
+      test_result <- fisher.test(matrix(c(current_age_data[current_age_data$type=="Shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Shared",]$n_pair, 
+                                          current_age_data[current_age_data$type=="Not shared",]$n_pair, 
+                                          first_age_data[first_age_data$type=="Not shared",]$n_pair), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- rbind(significance_results, data.frame(age_numeric = current_age, significance = significance))
+    }
+    
+    significance_results
+  })
+
+fig <- merge(fig_dta[fig_dta$variable=="Overall" & fig_dta$cohort!="Rochester",], comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+fig$significance <- ifelse(fig$type=="Not shared", "", fig$significance)
+
+p1 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="RESONANCE" | fig$cohort=="VDAART") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", size=0.2) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number amd Proportion of ASVs") +
+    geom_text(aes(x = age, y = max(n_pair), label = significance), size=7) +
+    theme_bw()+   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p2 <- 
+  fig[fig$variable=="Overall" & (fig$cohort=="WISC") ,] %>%
+    ggplot(aes(x=age, y=n_pair, fill=type)) +
+    geom_bar(stat="identity", position="stack", color="black", width=0.5) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    geom_text(aes(label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), size = 4, position = position_stack(vjust=0.5))  +
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    geom_text(aes(x = age, y = max(n_pair), label = significance), size=7) +
+    theme_bw()+   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.9)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bacteroides_overall_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 6.7, units = "in", dpi = 500)
+
+```
+
+## By delivery mode
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="C-section" | variable=="Vaginal") & cohort!="Rochester") %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "Vaginal" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Vaginal" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "C-section" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="C-section" | fig_dta$variable=="Vaginal", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    geom_text(aes(x = age_junk, y = max(n_pair), label = significance), size=7) +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "Vaginal"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "Vaginal"), 
+              aes(x = age_junk - 0.17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "C-section"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "C-section"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    geom_text(aes(x = age_junk, y = max(n_pair), label = significance), size=7) +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bacteroides_deliverymode_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```
+
+
+## By antibiotics
+```{r fig.height=8, fig.width=10, message=FALSE}
+# Compute pairwise comparisons: compare against the first timepoint
+comparison_results <- fig_dta %>%
+  filter((variable=="No" | variable=="Yes") & (cohort=="RESONANCE" | cohort=="WISC")) %>%
+  group_by(cohort, age_numeric) %>%
+  do({
+     test_result <- fisher.test(matrix(c(.$n_pair[.$variable == "No" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Shared"], 
+                                   .$n_pair[.$variable == "No" & .$type=="Not shared"], 
+                                   .$n_pair[.$variable == "Yes" & .$type=="Not shared"]), nrow = 2))
+      significance <- get_significance_symbol(test_result$p.value)
+
+      significance_results <- data.frame(significance = significance)
+      significance_results
+
+     }) 
+
+fig <- merge(fig_dta[fig_dta$variable=="No" | fig_dta$variable=="Yes", ], 
+             comparison_results, by = c("cohort", "age_numeric"), all.x = TRUE)
+
+fig2 <- droplevels(fig[fig$cohort=="RESONANCE" | fig$cohort=="VDAART",])
+p1 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .22), width = .4, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .22), width = .4, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .22, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    geom_text(aes(x = age_junk, y = max(n_pair), label = significance), size=7) +
+    theme_bw() +   scale_fill_manual(values=c("white", "#0072B2")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+
+fig2 <- droplevels(fig[fig$cohort=="WISC",])
+p2 <- 
+    ggplot(fig2, aes(y=n_pair, fill=type)) +
+    geom_col(data = filter(fig2, variable == "No"), aes(x = age_junk - .17), width = .3, linetype="solid", color="black") +
+    geom_text(data = filter(fig2, variable == "No"), 
+              aes(x = age_junk - .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    geom_col(data = filter(fig2, variable == "Yes"), aes(x = age_junk + .17), width = .3, linetype="dashed", color="black") +
+    geom_text(data = filter(fig2, variable == "Yes"), 
+              aes(x = age_junk + .17, label=paste0(n_pair, "\n", round(prop, 1), "%"), group=type), 
+              size = 4, position = position_stack(vjust=0.5))  +
+    scale_x_continuous(limits=c(0.3, 2.7), breaks = unique(fig2$age_junk), labels = levels(fig2$age)) +
+    facet_wrap(cohort~.,  scales = "free") +  
+    labs(x="Child's Age in Months, Mean (Range)", y="Number and Proportion of ASVs") +
+    theme_bw() +   scale_fill_manual(values=c("white", "#E69F00")) +
+    theme(axis.text.x = element_text(size=11), axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+          axis.title = element_text(size=12, face="bold"), strip.text = element_text(size=12), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "none",
+        strip.background = element_rect(fill="white"))
+
+p <- ggarrange(NULL, p1, NULL, ggarrange(p2 , NULL, nrow=1, widths=c(1, 0.95)), 
+               nrow=4, heights=c(0.05, 1, 0.05, 1), 
+          labels = c("", "A", "", "B"), font.label = list(size = 17), vjust=0)
+p
+
+    ggsave(p, filename = "Aim3_Bacteroides_antibiotics_adj_120123.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 500)
+
+```

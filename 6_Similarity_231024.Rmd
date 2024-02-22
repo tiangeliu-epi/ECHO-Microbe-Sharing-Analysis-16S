@@ -1,0 +1,988 @@
+---
+title: "Similarity analysis comparing biological vs random mother-infant pairs for OIF cohorts"
+author: "Tiange Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",  
+    )
+  })
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include=FALSE}
+source("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/ANALYSIS/Codes/OIF_Function.r")
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+```
+
+
+Read in covariates 
+```{r}
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_072823_v3.csv")
+
+# re-label some variables
+master_dt$birth_delivm <- as.factor(master_dt$birth_delivm)
+master_dt$birth_delivm <- factor(master_dt$birth_delivm, levels=c("-5", "1","2"), labels=c("Missing", "Vaginal delivery", "Cesarean delivery"))
+
+master_dt$med_antib_pn <- as.factor(master_dt$med_antib_pn)
+master_dt$med_antib_pn <- factor(master_dt$med_antib_pn, levels=c("-8", "0", "1"), labels=c("Missing", "No antibiotics", "Took antibiotics"))
+```
+
+
+# MARCH
+## Prepare master data
+```{r message=FALSE}
+## Read in paired IDs
+march <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/12902/MARCH_paired_54.csv")
+
+march$participant_type <- as.factor(march$m16s_part_type)
+march$participant_type <- factor(march$participant_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+march$body_site <- as.factor(march$m16s_spec_type)
+march$body_site <- factor(march$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+
+march$paired_ID <- substr(march$ParticipantID, 1, 9)
+
+
+## Add breastfeeding variables measured at the time of sample collection
+bf_dt <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/submitted_participants_0556a.tsv")
+
+table(bf_dt$child_breastfed, bf_dt$infant_diet)
+# breastfed: 1=yes, 2=no
+# diet:1, Breastmilk| 2, Infant formula | 3, Mixed breastmilk and formula |4, Breastmilk and solids| 5, Formula and solids| 6, Breastmilk, formula and solids|7, Other| -7,Declined | -8,Don’t know | -9,Missing 
+
+bf_dt <- bf_dt %>%
+  select('sample-id', child_breastfed, infant_diet)
+march <- merge(march, bf_dt, by.x=c("sample.id"), by.y="sample-id")
+table(march[march$participant_type=="child",]$child_breastfed, march[march$participant_type=="child",]$infant_diet)
+
+# generate a new variable
+march$feeding <- ifelse(march$participant_type=="biological mother", -6, 
+                        ifelse(march$infant_diet==1, 1, ifelse(march$infant_diet==2 & march$child_breastfed==2, 2, 3)))
+table(march[march$participant_type=="child",]$feeding)  #34, 6, 14
+march$feeding <- as.factor(march$feeding)
+march$feeding <- factor(march$feeding, levels=c("-6", "1", "2", "3"), labels=c("NA", "Exclusive breastmilk", "Exclusive formula", "Mixed"))
+
+
+march$bf <- ifelse(march$participant_type=="biological mother", -6,
+                   ifelse(march$feeding=="Exclusive formula", 2, 1))
+table(march[march$participant_type=="child",]$bf)  #48, 6
+march$bf <- as.factor(march$bf)
+march$bf <- factor(march$bf, levels=c("-6", "1", "2"), labels=c("NA", "Yes", "No"))
+
+## Merge with covariates
+march <- merge(march, master_dt[, -c(1)], by.x="paired_ID", by.y="PregID", all=FALSE)
+
+## Exclude infant with missing delivery mode
+march <- filter(march, !is.na(birth_delivm))
+
+## Restrict to 3rd trimester maternal samples
+march <- filter(march, paired_ID %in% as.list(march[march$body_site=="vaginal" & march$m16s_coll_tmst==3,]$paired_ID))
+
+length(unique(march$sample.id))
+length(unique(march$paired_ID))
+table(march$m16s_age_yr)
+```
+
+## Extract infant ID, maternal vaginal ID, maternal stool ID
+```{r}
+i_id <- march %>% filter(participant_type=="child") %>% select(sample.id)
+mv_id <- march %>% filter(body_site=="vaginal") %>% select(sample.id)
+ms_id <- march %>% filter(body_site=="stool" & participant_type=="biological mother") %>% select(sample.id)
+```
+
+## Read in dissimilarity matrices
+```{r message=FALSE, warning=FALSE}
+# bray-curtis
+bc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/braycurtis.tsv") 
+row_name <- bc$...1
+bc <- bc[, c(-1)]
+row.names(bc) <- row_name
+
+# jaccard
+jc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/jaccard.tsv")
+row_name <- jc$...1
+jc <- jc[, c(-1)]
+row.names(jc) <- row_name
+
+# unweighted unifrac
+uu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/unweighted_unifrac.tsv")
+row_name <- uu$...1
+uu <- uu[, c(-1)]
+row.names(uu) <- row_name
+
+# weighted unifrac
+wu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/weighted_unifrac.tsv")
+row_name <- wu$...1
+wu <- wu[, c(-1)]
+row.names(wu) <- row_name
+```
+
+## Create summary datasets for dissimilarity within pairs of mother-own child, mother-unrelated child
+```{r message=FALSE}
+## based on rarefied count table
+sum_stool_march <- combine_sum_diss(bc, jc, uu, wu, i_id, ms_id)
+sum_stool_march$age <- "3 (3, 6)"
+sum_stool_march$cohort <- "MARCH"
+
+
+sum_vaginal_march <- combine_sum_diss(bc, jc, uu, wu, i_id, mv_id)
+sum_vaginal_march$age <- "3 (3, 6)"
+sum_vaginal_march$cohort <- "MARCH"
+
+
+## based on un-rarefied count table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/12902_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+asv_table <- asv_table[-(nrow(asv_table)), ] # remove unnecessary rows
+
+row_names <- row.names(asv_table)
+asv_table <- as.data.frame(lapply(asv_table, as.integer))
+asv_table <- as.matrix(asv_table)
+row.names(asv_table) <- row_names
+
+jc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "jaccard")))
+bc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "bray")))
+
+
+sum_stool_march_2 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id, ms_id)
+sum_stool_march_2$age <- "3 (3, 6)"
+sum_stool_march_2$cohort <- "MARCH"
+
+
+sum_vaginal_march_2 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id, mv_id)
+sum_vaginal_march_2$age <- "3 (3, 6)"
+sum_vaginal_march_2$cohort <- "MARCH"
+```
+
+
+
+# Import participant data that will be useful for the other four cohorts
+```{r}
+full_dta <- read.delim("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/m16s_der_hpc_0556a.tsv")
+
+table(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- as.factor(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- factor(full_dta$m16s_part_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+table(full_dta$m16s_spec_type)
+full_dta$body_site <- as.factor(full_dta$m16s_spec_type)
+full_dta$body_site <- factor(full_dta$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+```
+
+# VDAART
+## Prepare master data
+```{r}
+vdaart <- read.csv(paste0(path,"Results/feast_12301_091123.csv"))
+
+table(vdaart$m16s_age_yr)
+# possible cut off point: <=0.5y, 0.83-1.25y, 2.83-3.25, 3.92-4.25
+```
+
+## Extract infant ID, maternal vaginal ID, maternal stool ID
+```{r}
+i_id_1 <- vdaart %>% filter(m16s_age_yr<=0.5) %>% select(sample.id)
+ms_id_1 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12301 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_1$sample.id, 7, 15)))) %>% select(sample.id)
+
+i_id_2 <- vdaart %>% filter(m16s_age_yr>=0.83 & m16s_age_yr<=1.25) %>% select(sample.id)
+ms_id_2 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12301 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_2$sample.id, 7, 15)))) %>% select(sample.id)
+
+i_id_3 <- vdaart %>% filter(m16s_age_yr>=2.83 & m16s_age_yr<=3.25) %>% select(sample.id)
+ms_id_3 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12301 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_3$sample.id, 7, 15)))) %>% select(sample.id)
+
+i_id_4 <- vdaart %>% filter(m16s_age_yr>=3.92 & m16s_age_yr<=4.25) %>% select(sample.id)
+ms_id_4 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12301 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_4$sample.id, 7, 15)))) %>% select(sample.id)
+
+```
+
+
+## Read in dissimilarity matrices
+```{r message=FALSE, warning=FALSE}
+# bray-curtis
+bc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/braycurtis.tsv") 
+row_name <- bc$...1
+bc <- bc[, c(-1)]
+row.names(bc) <- row_name
+
+# jaccard
+jc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/jaccard.tsv")
+row_name <- jc$...1
+jc <- jc[, c(-1)]
+row.names(jc) <- row_name
+
+# unweighted unifrac
+uu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/unweighted_unifrac.tsv")
+row_name <- uu$...1
+uu <- uu[, c(-1)]
+row.names(uu) <- row_name
+
+# weighted unifrac
+wu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/weighted_unifrac.tsv")
+row_name <- wu$...1
+wu <- wu[, c(-1)]
+row.names(wu) <- row_name
+```
+
+
+## Create summary datasets for dissimilarity within pairs of mother-own child, mother-unrelated child
+```{r message=FALSE}
+## based on rarefied count table
+sum_stool_1 <- combine_sum_diss(bc, jc, uu, wu, i_id_1, ms_id_1)
+sum_stool_1$age <- "4 (2, 6)"
+
+sum_stool_2 <- combine_sum_diss(bc, jc, uu, wu, i_id_2, ms_id_2)
+sum_stool_2$age <- "12 (10, 15)"
+
+sum_stool_3 <- combine_sum_diss(bc, jc, uu, wu, i_id_3, ms_id_3)
+sum_stool_3$age <- "36 (34, 39)"
+
+sum_stool_4 <- combine_sum_diss(bc, jc, uu, wu, i_id_4, ms_id_4)
+sum_stool_4$age <- "48 (47, 51)"
+
+sum_stool_vdaart <- rbind(sum_stool_1, sum_stool_2, sum_stool_3, sum_stool_4)
+sum_stool_vdaart$cohort <- "VDAART"
+
+
+## based on un-rarefied count table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/12301_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+asv_table <- asv_table[-(nrow(asv_table)), ] # remove unnecessary rows
+
+row_names <- row.names(asv_table)
+asv_table <- as.data.frame(lapply(asv_table, as.integer))
+asv_table <- as.matrix(asv_table)
+row.names(asv_table) <- row_names
+
+jc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "jaccard")))
+bc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "bray")))
+
+
+sum_stool_1 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_1, ms_id_1)
+sum_stool_1$age <- "4 (2, 6)"
+
+sum_stool_2 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_2, ms_id_2)
+sum_stool_2$age <- "12 (10, 15)"
+
+sum_stool_3 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_3, ms_id_3)
+sum_stool_3$age <- "36 (34, 39)"
+
+sum_stool_4 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_4, ms_id_4)
+sum_stool_4$age <- "48 (47, 51)"
+
+sum_stool_vdaart_2 <- rbind(sum_stool_1, sum_stool_2, sum_stool_3, sum_stool_4)
+sum_stool_vdaart_2$cohort <- "VDAART"
+
+```
+
+
+# RESONANCE
+```{r}
+resonance <- read.csv(paste0(path,"Results/feast_10703_091123.csv"))
+
+table(resonance$m16s_age_yr)
+# possible cut-off: 0.08-0.25, 0.33-0.67, 0.75-1.58, 1.67-3.42
+
+```
+
+
+## Extract infant ID, maternal vaginal ID, maternal stool ID
+```{r message=FALSE}
+i_id_1 <- resonance %>% filter(m16s_age_yr<=0.25) %>% select(sample.id)
+ms_id_1 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==10703 &
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_1$sample.id, 7, 15)))) %>% 
+  mutate(prefix = substr(sample.id, 7, 15)) %>%
+  group_by(prefix) %>%
+  slice_tail(n = 1) %>%   # only keep the last observation for each mother
+  select(sample.id)
+ms_id_1 <- ms_id_1[, c(-1)]
+
+
+i_id_2 <- resonance %>% filter(m16s_age_yr>=0.33 & m16s_age_yr<=0.67) %>% select(sample.id)
+ms_id_2 <- full_dta %>% filter(m16s_part_type=="biological mother" &  CohortID==10703 &
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_2$sample.id, 7, 15)))) %>% 
+  mutate(prefix = substr(sample.id, 7, 15)) %>%
+  group_by(prefix) %>%
+  slice_tail(n = 1) %>%   # only keep the last observation for each mother
+  select(sample.id)
+ms_id_2 <- ms_id_2[, c(-1)]
+
+
+i_id_3 <- resonance %>% filter(m16s_age_yr>=0.75 & m16s_age_yr<=1.58) %>% select(sample.id)
+ms_id_3 <- full_dta %>% filter(m16s_part_type=="biological mother" &  CohortID==10703 &
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_3$sample.id, 7, 15)))) %>% 
+  mutate(prefix = substr(sample.id, 7, 15)) %>%
+  group_by(prefix) %>%
+  slice_tail(n = 1) %>%   # only keep the last observation for each mother
+  select(sample.id)
+ms_id_3 <- ms_id_3[, c(-1)]
+
+
+i_id_4 <- resonance %>% filter(m16s_age_yr>=1.67 & m16s_age_yr<=3.42) %>% select(sample.id)
+ms_id_4 <- full_dta %>% filter(m16s_part_type=="biological mother" &  CohortID==10703 &
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_4$sample.id, 7, 15)))) %>% 
+  mutate(prefix = substr(sample.id, 7, 15)) %>%
+  group_by(prefix) %>%
+  slice_tail(n = 1) %>%   # only keep the last observation for each mother
+  select(sample.id)
+ms_id_4 <- ms_id_4[, c(-1)]
+```
+
+## Read in dissimilarity matrices
+```{r message=FALSE, warning=FALSE}
+# bray-curtis
+bc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/braycurtis.tsv") 
+row_name <- bc$...1
+bc <- bc[, c(-1)]
+row.names(bc) <- row_name
+
+# jaccard
+jc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/jaccard.tsv")
+row_name <- jc$...1
+jc <- jc[, c(-1)]
+row.names(jc) <- row_name
+
+# unweighted unifrac
+uu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/unweighted_unifrac.tsv")
+row_name <- uu$...1
+uu <- uu[, c(-1)]
+row.names(uu) <- row_name
+
+# weighted unifrac
+wu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/weighted_unifrac.tsv")
+row_name <- wu$...1
+wu <- wu[, c(-1)]
+row.names(wu) <- row_name
+```
+
+
+## Create summary datasets for dissimilarity within pairs of mother-own child, mother-unrelated child
+```{r message=FALSE}
+## based on rarefied count table
+sum_stool_1 <- combine_sum_diss(bc, jc, uu, wu, i_id_1, ms_id_1)
+sum_stool_1$age <- paste0(round(mean(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_2 <- combine_sum_diss(bc, jc, uu, wu, i_id_2, ms_id_2)
+sum_stool_2$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_3 <- combine_sum_diss(bc, jc, uu, wu, i_id_3, ms_id_3)
+sum_stool_3$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_4 <- combine_sum_diss(bc, jc, uu, wu, i_id_4, ms_id_4)
+sum_stool_4$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_resonance <- rbind(sum_stool_1, sum_stool_2, sum_stool_3, sum_stool_4)
+sum_stool_resonance$cohort <- "RESONANCE"
+
+
+## based on un-rarefied count table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/10703_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+asv_table <- asv_table[-(nrow(asv_table)), ] # remove unnecessary rows
+
+row_names <- row.names(asv_table)
+asv_table <- as.data.frame(lapply(asv_table, as.integer))
+asv_table <- as.matrix(asv_table)
+row.names(asv_table) <- row_names
+
+jc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "jaccard")))
+bc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "bray")))
+
+sum_stool_1 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_1, ms_id_1)
+sum_stool_1$age <- paste0(round(mean(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr<=0.25,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_2 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_2, ms_id_2)
+sum_stool_2$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=0.33 & resonance$m16s_age_yr<=0.67,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_3 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_3, ms_id_3)
+sum_stool_3$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=0.75 & resonance$m16s_age_yr<=1.58,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_4 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_4, ms_id_4)
+sum_stool_4$age <- paste0(round(mean(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), " (",
+                          round(min(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), ", ",
+                          round(max(resonance[resonance$m16s_age_yr>=1.67 & resonance$m16s_age_yr<=3.42,]$m16s_age_yr)*12,0), ")")
+
+sum_stool_resonance_2 <- rbind(sum_stool_1, sum_stool_2, sum_stool_3, sum_stool_4)
+sum_stool_resonance_2$cohort <- "RESONANCE"
+
+```
+
+# Visualize fecal-fecal dissimilarity between child-mother and child-random mother
+## Rarefied
+```{r fig.width=12, fig.height=10}
+sum_stool <- rbind(sum_stool_march, sum_stool_vdaart, sum_stool_resonance)
+sum_stool <- sum_stool %>% group_by(cohort, beta, age, comparison) %>% mutate(size=n())
+sum_stool$age <- paste0(sum_stool$age, "\nn=", sum_stool$size)
+
+table(sum_stool$age)
+sum_stool$age <- factor(sum_stool$age, levels=c("2 (1, 3)\nn=41", "3 (3, 6)\nn=23", "4 (2, 6)\nn=75", "5 (4, 8)\nn=25", 
+                                                "12 (10, 15)\nn=97", "13 (10, 19)\nn=24", "32 (20, 41)\nn=13", "36 (34, 39)\nn=74", 
+                                                "48 (47, 51)\nn=56"))
+
+
+sum_stool %>%
+  ggplot(aes(x=age, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age in Months, Mean (Range)", y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=6, fig.height=10}
+sum_stool %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs( y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort),  scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8, 
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=3, fig.height=10}
+sum_stool %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs( y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8, 
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+
+Save rarefied figure by cohort and child age, only show Jaccard and Bray-Curtis
+```{r fig.width=12, fig.height=5}
+f1 <-
+  sum_stool[sum_stool$beta=="Jaccard" | sum_stool$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=age, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age in Months, Mean (Range)", y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+f1
+```
+
+## Unrarefied
+```{r fig.width=12, fig.height=4.5}
+sum_stool_2 <- rbind(sum_stool_march_2, sum_stool_vdaart_2, sum_stool_resonance_2)
+sum_stool_2 <- sum_stool_2 %>% group_by(cohort, beta, age, comparison) %>% mutate(size=n())
+sum_stool_2$age <- paste0(sum_stool_2$age, "\nn=", sum_stool_2$size)
+
+sum_stool_2$age <- factor(sum_stool_2$age, levels=c("2 (1, 3)\nn=41", "3 (3, 6)\nn=23", "4 (2, 6)\nn=75", "5 (4, 8)\nn=25", 
+                                                "12 (10, 15)\nn=97", "13 (10, 19)\nn=24", "32 (20, 41)\nn=13", "36 (34, 39)\nn=74", 
+                                                "48 (47, 51)\nn=56"))
+
+sum_stool_2[sum_stool_2$beta=="Jaccard" | sum_stool_2$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=age, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age in Months, Mean (Range)", y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=6, fig.height=4.5}
+sum_stool_2[sum_stool_2$beta=="Jaccard" | sum_stool_2$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort),  scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=3, fig.height=4.5}
+sum_stool_2[sum_stool_2$beta=="Jaccard" | sum_stool_2$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age (Months)", y="Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+
+
+
+# WISC
+```{r}
+wisc <- read.csv(paste0(path,"Results/feast_11305_091123.csv"))
+
+table(wisc$m16s_age_yr)
+# possible cut off: 0.08-0.17, 0.5-0.92
+```
+
+## Extract infant ID, maternal vaginal ID, maternal vaginal ID
+```{r}
+i_id_1 <- wisc %>% filter(m16s_age_yr<=0.17) %>% select(sample.id)
+mv_id_1 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==11305 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_1$sample.id, 7, 15)))) %>% select(sample.id)
+
+i_id_2 <- wisc %>% filter(m16s_age_yr>=0.5 & m16s_age_yr<=0.92) %>% select(sample.id)
+mv_id_2 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==11305 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_2$sample.id, 7, 15)))) %>% select(sample.id)
+```
+
+## Read in dissimilarity matrices
+```{r message=FALSE, warning=FALSE}
+# bray-curtis
+bc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/braycurtis.tsv") 
+row_name <- bc$...1
+bc <- bc[, c(-1)]
+row.names(bc) <- row_name
+
+# jaccard
+jc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/jaccard.tsv")
+row_name <- jc$...1
+jc <- jc[, c(-1)]
+row.names(jc) <- row_name
+
+# unweighted unifrac
+uu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/unweighted_unifrac.tsv")
+row_name <- uu$...1
+uu <- uu[, c(-1)]
+row.names(uu) <- row_name
+
+# weighted unifrac
+wu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/weighted_unifrac.tsv")
+row_name <- wu$...1
+wu <- wu[, c(-1)]
+row.names(wu) <- row_name
+```
+
+
+
+## Create summary datasets for dissimilarity within pairs of mother-own child, mother-unrelated child
+```{r message=FALSE}
+## based on rarefied count table
+sum_vaginal_1 <- combine_sum_diss(bc, jc, uu, wu, i_id_1, mv_id_1)
+sum_vaginal_1$age <- paste0(round(mean(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), " (",
+                          round(min(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), ", ",
+                          round(max(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), ")")
+
+sum_vaginal_2 <- combine_sum_diss(bc, jc, uu, wu, i_id_2, mv_id_2)
+sum_vaginal_2$age <- paste0(round(mean(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), " (",
+                          round(min(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), ", ",
+                          round(max(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), ")")
+
+sum_vaginal_wisc <- rbind(sum_vaginal_1, sum_vaginal_2)
+sum_vaginal_wisc$cohort <- "WISC"
+
+
+## based on un-rarefied count table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/11305_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+asv_table <- asv_table[-(nrow(asv_table)), ] # remove unnecessary rows
+
+row_names <- row.names(asv_table)
+asv_table <- as.data.frame(lapply(asv_table, as.integer))
+asv_table <- as.matrix(asv_table)
+row.names(asv_table) <- row_names
+
+jc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "jaccard")))
+bc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "bray")))
+
+
+sum_vaginal_1 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_1, mv_id_1)
+sum_vaginal_1$age <- paste0(round(mean(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), " (",
+                          round(min(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), ", ",
+                          round(max(wisc[wisc$m16s_age_yr<=0.17,]$m16s_age_yr, na.rm = TRUE)*12,0), ")")
+
+sum_vaginal_2 <- combine_sum_diss(bc_2, jc_2, uu, wu, i_id_2, mv_id_2)
+sum_vaginal_2$age <- paste0(round(mean(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), " (",
+                          round(min(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), ", ",
+                          round(max(wisc[wisc$m16s_age_yr>=0.5 & wisc$m16s_age_yr<=0.92,]$m16s_age_yr, na.rm = TRUE)*12,0), ")")
+
+sum_vaginal_wisc_2 <- rbind(sum_vaginal_1, sum_vaginal_2)
+sum_vaginal_wisc_2$cohort <- "WISC"
+
+```
+
+# Rochester
+```{r}
+rochester <- read.csv(paste0(path,"Results/feast_12601_091123.csv"))
+
+table(rochester$m16s_age_yr)
+# possible cut off: 0-0.17, 0.42-0.75, 0.83-1.5
+```
+
+## Extract infant ID, maternal vaginal ID, maternal vaginal ID
+```{r}
+i_id_1 <- rochester %>% filter(m16s_age_yr<=0.17) %>% select(sample.id)
+mv_id_1 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12601 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_1$sample.id, 7, 15)))) %>% select(sample.id)
+
+i_id_2 <- rochester %>% filter(m16s_age_yr>=0.42 & m16s_age_yr<=0.75) %>% select(sample.id)
+mv_id_2 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12601 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_2$sample.id, 7, 15)))) %>% select(sample.id)
+
+i_id_3 <- rochester %>% filter(m16s_age_yr>=0.83 & m16s_age_yr<=1.5) %>% select(sample.id)
+mv_id_3 <- full_dta %>% filter(m16s_part_type=="biological mother" & CohortID==12601 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(i_id_3$sample.id, 7, 15)))) %>% select(sample.id)
+```
+
+
+```{r}
+min(full_dta[full_dta$sample.id %in% as.list(i_id_1$sample.id),]$m16s_slv138_97_depth)
+length(unique(full_dta[full_dta$sample.id %in% as.list(i_id_1$sample.id),]$sample.id))
+
+min(full_dta[full_dta$sample.id %in% as.list(i_id_2$sample.id),]$m16s_slv138_97_depth)
+length(unique(full_dta[full_dta$sample.id %in% as.list(i_id_2$sample.id),]$sample.id))
+
+min(full_dta[full_dta$sample.id %in% as.list(i_id_3$sample.id),]$m16s_slv138_97_depth)
+length(unique(full_dta[full_dta$sample.id %in% as.list(i_id_3$sample.id),]$sample.id))
+
+min(full_dta[full_dta$sample.id %in% as.list(mv_id_1$sample.id),]$m16s_slv138_97_depth)
+length(unique(full_dta[full_dta$sample.id %in% as.list(mv_id_1$sample.id),]$sample.id))
+
+min(full_dta[full_dta$sample.id %in% as.list(mv_id_2$sample.id),]$m16s_slv138_97_depth)
+length(unique(full_dta[full_dta$sample.id %in% as.list(mv_id_2$sample.id),]$sample.id))
+
+min(full_dta[full_dta$sample.id %in% as.list(mv_id_3$sample.id),]$m16s_slv138_97_depth)
+length(unique(full_dta[full_dta$sample.id %in% as.list(mv_id_3$sample.id),]$sample.id))
+
+min(full_dta[full_dta$CohortID==12601,]$m16s_slv138_97_depth)
+```
+
+## Read in dissimilarity matrices
+Because many of IDs in matrices do not overlap with IDs contributed to analysis, these matrices are useless. 
+I calculated Jaccard and Bray-Curtis based on ASV tables as below
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# bray-curtis
+bc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/braycurtis.tsv") 
+row_name <- bc$...1
+bc <- bc[, c(-1)]
+row.names(bc) <- row_name
+
+# jaccard
+jc <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/jaccard.tsv")
+row_name <- jc$...1
+jc <- jc[, c(-1)]
+row.names(jc) <- row_name
+
+# unweighted unifrac
+uu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/unweighted_unifrac.tsv")
+row_name <- uu$...1
+uu <- uu[, c(-1)]
+row.names(uu) <- row_name
+
+# weighted unifrac
+wu <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/weighted_unifrac.tsv")
+row_name <- wu$...1
+wu <- wu[, c(-1)]
+row.names(wu) <- row_name
+```
+
+## Create summary datasets for dissimilarity within pairs of mother-own child, mother-unrelated child
+```{r message=FALSE}
+## based on un-rarefied count table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/12601_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+asv_table <- asv_table[-(nrow(asv_table)), ] # remove unnecessary rows
+
+row_names <- row.names(asv_table)
+asv_table <- as.data.frame(lapply(asv_table, as.integer))
+asv_table <- as.matrix(asv_table)
+row.names(asv_table) <- row_names
+
+jc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "jaccard")))
+bc_2 <- as.data.frame(as.matrix(vegdist(asv_table, method = "bray")))
+
+
+sum_vaginal_1 <- rbind(sum_diss(bc_2, i_id_1, mv_id_1), sum_diss(jc_2, i_id_1, mv_id_1))
+sum_vaginal_1$age <- paste0(round(mean(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), ")")
+
+sum_vaginal_2 <- rbind(sum_diss(bc_2, i_id_2, mv_id_2), sum_diss(jc_2, i_id_2, mv_id_2))
+sum_vaginal_2$age <- paste0(round(mean(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), ")")
+
+sum_vaginal_3 <- rbind(sum_diss(bc_2, i_id_3, mv_id_3), sum_diss(jc_2, i_id_3, mv_id_3))
+sum_vaginal_3$age <- paste0(round(mean(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), ")")
+
+sum_vaginal_rochester_2 <- rbind(sum_vaginal_1, sum_vaginal_2, sum_vaginal_3)
+sum_vaginal_rochester_2$cohort <- "Rochester"
+
+
+## based on rarefied count table
+asv_table_r <- rrarefy(asv_table, 1000) # rarefy at 1000
+
+jc <- as.data.frame(as.matrix(vegdist(asv_table_r, method = "jaccard")))
+bc <- as.data.frame(as.matrix(vegdist(asv_table_r, method = "bray")))
+
+sum_vaginal_1 <- rbind(sum_diss(bc, i_id_1, mv_id_1), sum_diss(jc, i_id_1, mv_id_1))
+sum_vaginal_1$age <- paste0(round(mean(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr<=0.17,]$m16s_age_yr)*12,0), ")")
+
+sum_vaginal_2 <- rbind(sum_diss(bc, i_id_2, mv_id_2), sum_diss(jc, i_id_2, mv_id_2))
+sum_vaginal_2$age <- paste0(round(mean(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr>=0.42 & rochester$m16s_age_yr<=0.75,]$m16s_age_yr)*12,0), ")")
+
+sum_vaginal_3 <- rbind(sum_diss(bc, i_id_3, mv_id_3), sum_diss(jc, i_id_3, mv_id_3))
+sum_vaginal_3$age <- paste0(round(mean(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), " (",
+                          round(min(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), ", ",
+                          round(max(rochester[rochester$m16s_age_yr>=0.83 & rochester$m16s_age_yr<=1.5,]$m16s_age_yr)*12,0), ")")
+
+sum_vaginal_rochester <- rbind(sum_vaginal_1, sum_vaginal_2, sum_vaginal_3)
+sum_vaginal_rochester$cohort <- "Rochester"
+
+```
+
+
+# Visualize vaginal-fecal dissimilarity between child-mother and child-random mother
+## Rarefied
+```{r fig.width=12, fig.height=10}
+sum_vaginal <- rbind(sum_vaginal_march, sum_vaginal_wisc, sum_vaginal_rochester)
+sum_vaginal <- sum_vaginal %>% group_by(cohort, beta, age, comparison) %>% mutate(size=n())
+sum_vaginal$age <- paste0(sum_vaginal$age, "\nn=", sum_vaginal$size)
+
+table(sum_vaginal$age)
+sum_vaginal$age <- factor(sum_vaginal$age, levels=c("1 (0, 2)\nn=48", "2 (1, 2)\nn=127", "3 (3, 6)\nn=23", "6 (5, 9)\nn=87", "9 (6, 11)\nn=125",
+                                                    "12 (10, 18)\nn=88"))
+
+sum_vaginal %>%
+  ggplot(aes(x=age, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age in Months, Mean (Range)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+```
+```{r}
+sum_vaginal[sum_vaginal$cohort=="Rochester",] %>%
+  group_by(cohort, beta, age, comparison) %>%
+  summarise(mean=mean(values))
+```
+
+```{r fig.width=6, fig.height=10}
+sum_vaginal %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age (Months)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols = vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8, 
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=3, fig.height=5}
+sum_vaginal %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age (Months)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8, 
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+
+Save rarefied figure by cohort and child age, only show Jaccard and Bray-Curtis
+```{r fig.width=12, fig.height=5}
+f2 <-
+  sum_vaginal[sum_vaginal$beta=="Jaccard" | sum_vaginal$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=age, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age in Months, Mean (Range)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.6,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+f2
+```
+
+## Unrarefied
+```{r fig.width=12, fig.height=5}
+sum_vaginal_2 <- rbind(sum_vaginal_march_2, sum_vaginal_wisc_2, sum_vaginal_rochester_2)
+sum_vaginal_2 <- sum_vaginal_2 %>% group_by(cohort, beta, age, comparison) %>% mutate(size=n())
+sum_vaginal_2$age <- paste0(sum_vaginal_2$age, "\nn=", sum_vaginal_2$size)
+
+table(sum_vaginal_2$age)
+sum_vaginal_2$age <- factor(sum_vaginal_2$age, levels=c("1 (0, 2)\nn=48", "2 (1, 2)\nn=127", "3 (3, 6)\nn=23", "6 (5, 9)\nn=87", "9 (6, 11)\nn=125",
+                                                    "12 (10, 18)\nn=88"))
+
+sum_vaginal_2[sum_vaginal_2$beta=="Jaccard" | sum_vaginal_2$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=age, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age in Months, Mean (Range)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols=vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8,
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=6, fig.height=5}
+sum_vaginal_2[sum_vaginal_2$beta=="Jaccard" | sum_vaginal_2$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age (Months)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), cols = vars(cohort), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8, 
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+```{r fig.width=3, fig.height=5}
+sum_vaginal_2[sum_vaginal_2$beta=="Jaccard" | sum_vaginal_2$beta=="Bray-Curtis",] %>%
+  ggplot(aes(x=1, y = values, fill=comparison)) +
+  geom_split_violin(trim = TRUE, alpha = .3) +  labs(x = "Child's Age (Months)", y = "Dissimilarity", fill="Pair") + 
+  geom_boxplot(width = .15, alpha = .5, position = position_dodge(.2)) +
+  facet_grid(rows = vars(beta), scales = "free", space = "free_x") +
+  scale_fill_viridis_d(direction=-1) +
+  theme_bw() + 
+  theme(axis.text = element_text(size=12), axis.title = element_text(size=14), strip.text = element_text(size=14), 
+        axis.text.x = element_blank(), axis.title.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+        legend.position = "bottom", legend.text = element_text(size=14), legend.title = element_text(size=14)) +
+  stat_compare_means(method = "wilcox.test", label = "p.signif", size=7, color="red", vjust=0.8, 
+                     symnum.args=list(cutpoints = c(0, 0.001, 0.01, 0.05, 0.1, Inf), symbols = c("***", "**", "*", "+", ""))) 
+
+```
+
+# Make final figure
+```{r fig.width=12, fig.height=10}
+p <- 
+  ggarrange(NULL, f1 + theme(strip.background = element_rect(fill="white")), NULL, f2+theme(strip.background = element_rect(fill="white")), 
+            nrow=4, 
+          common.legend = TRUE, legend = "bottom", heights=c(0.08, 1, 0.08, 1),
+          labels = c("A. Maternal Fecal vs Child Fecal Microbiota", "", "B. Maternal Vaginal vs Child Fecal Microbiota", ""), 
+          font.label = list(size = 16), hjust=0)
+p
+
+    ggsave(p, filename = "Similarity_103123.png",
+       path =  paste0(path, "Figures"),
+       height = 10, width = 12, units = "in", dpi = 500)
+
+```

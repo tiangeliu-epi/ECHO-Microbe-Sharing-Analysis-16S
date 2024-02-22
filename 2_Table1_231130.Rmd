@@ -1,0 +1,213 @@
+---
+title: "To Create Table 1 for OIF EC0556A"
+author: "Tiange Liu"
+date: "`r Sys.Date()`"
+output: word_document
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Tables",  
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r include=FALSE}
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+library(table1)
+library(dplyr)
+```
+
+
+```{r include=FALSE }
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_112923.csv")
+
+
+```
+
+```{r include=FALSE}
+# Import FEAST results estimated from each cohort
+# make sure to use outputs with most recent derived variables
+march <- read.csv(paste0(path,"Results/feast_12902_091123_54dyads.csv"))
+march <- filter(march, !is.na(birth_delivm)) # exclude 1 infant with missing delivery mode
+vdaart <- read.csv(paste0(path,"Results/feast_12301_091123.csv"))
+rochester <- read.csv(paste0(path,"Results/feast_12601_091123.csv"))
+wisc <- read.csv(paste0(path,"Results/feast_11305_091123.csv"))
+resonance <- read.csv(paste0(path,"Results/feast_10703_091123.csv"))
+
+
+# combine datasets
+output_full <- rbind(vdaart, rochester, wisc, resonance)
+output_full <- select(output_full, -c("contribution", "other", "m_body_site"))
+
+march <- filter(march, type=="Stool")
+march <- select(march, -c("PregID", "type", "prop"))
+march$order <- 1
+march$cohort <- "MARCH"
+
+
+output_full <- rbind(march, output_full)
+output_full$cohort <- factor(output_full$cohort, levels=c("MARCH", "RESONANCE", "VDAART", "ROCHESTER", "WISC"))
+
+output_full <- filter(output_full, order==1)
+```
+
+```{r include=FALSE}
+output_full <- select(output_full, sample.id, ParticipantID, cohort)
+
+output_full <- merge(output_full, master_dt, by.x="ParticipantID", by.y="ParticipantID.x", all.x = TRUE)
+
+```
+
+```{r include=FALSE}
+# modify a few variables
+output_full$demchild_mat_age <- ifelse(output_full$demchild_mat_age==-9, NA, output_full$demchild_mat_age)
+output_full$birth_bw <- output_full$birth_bw / 1000 # change unit from g to kg
+
+```
+
+
+```{r  include=FALSE}
+# Table 1 initial look
+
+table1(~ demchild_mat_age + factor(demchild_mat_race) + factor(demchild_mat_hispanic) + factor(sespreg_educ3) + 
+         factor(anthr_bmicat4_pp) + anthr_bmi_pp +
+         factor(demchild_race) + factor(demchild_hispanic) + factor(demchild_sex) +
+         factor(birth_ga_preterm) + birth_ga + delivery_ga +
+         factor(birth_delivm) + 
+         factor(birth_sga) + factor(birth_lga) + 
+         factor(birth_bw_cat) + birth_bw +
+         factor(med_antib_pn) | cohort,
+         data=output_full[output_full$order==1,])
+
+
+table1(~ factor(ifp_bfexcl2_3m) + factor(ifp_bfexcl2_6m) + factor(ifp_bfexcl3_3m) + factor(ifp_bfexcl3_6m) +
+         ifp_bfexcl2dur_wks + ifp_bfexcl3dur_wks + 
+         ifp_bfdur_wks + ifp_bfdur2_wks + factor(ifp_bfever) + ifp_foodini_wks + factor(ifp_fmlever)| cohort, 
+         data=output_full[output_full$order==1,])
+
+
+table1(~ factor(cond_hdp) + factor(cond_gdm) | cohort,
+         data=output_full[output_full$order==1,])
+
+```
+
+```{r  include=FALSE}
+output_full$demchild_mat_race <- ifelse(output_full$demchild_mat_race==1, "White", 
+                                        ifelse(output_full$demchild_mat_race==2, "Black",
+                                               ifelse(output_full$demchild_mat_race==-8 | output_full$demchild_mat_race==-9, "Missing",
+                                                      "Other or multiple races")))
+output_full$demchild_mat_race <- factor(output_full$demchild_mat_race, levels=c("White", "Black","Other or multiple races","Missing"))
+
+
+output_full$demchild_mat_hispanic <- ifelse(output_full$demchild_mat_hispanic==1, "Hispanic",
+                                            ifelse(output_full$demchild_mat_hispanic==0, "Non-Hispanic", "Missing"))
+output_full$demchild_mat_hispanic <- factor(output_full$demchild_mat_hispanic, levels=c("Hispanic", "Non-Hispanic", "Missing"))
+
+output_full$sespreg_educ3 <- ifelse((output_full$sespreg_educ3==1 | output_full$sespreg_educ3==2), "Less than college", 
+                                           ifelse(output_full$sespreg_educ3==3, "College or above", output_full$sespreg_educ3))
+output_full$sespreg_educ3 <- factor(output_full$sespreg_educ3, 
+                                    levels=c("Less than college", "College or above"))
+
+
+output_full$anthr_bmicat4_pp <- ifelse(output_full$anthr_bmicat4_pp==1, "Underweight",
+                                       ifelse(output_full$anthr_bmicat4_pp==2, "Normal weight",
+                                              ifelse(output_full$anthr_bmicat4_pp==3, "Overweight" ,
+                                                     ifelse(output_full$anthr_bmicat4_pp==4, "Obese", output_full$anthr_bmicat4_pp))))
+output_full$anthr_bmicat4_pp <- factor(output_full$anthr_bmicat4_pp, levels=c("Underweight", "Normal weight", 
+                                                                              "Overweight", "Obese"))
+
+table(output_full$med_antib_pn)
+output_full$med_antib_pn <- ifelse(is.na(output_full$med_antib_pn), "Missing", output_full$med_antib_pn)
+output_full$med_antib_pn <- as.factor(output_full$med_antib_pn)
+output_full$med_antib_pn <- factor(output_full$med_antib_pn, levels=c("0", "1", "Missing"), labels=c("No", "Yes", "Missing"))
+
+
+output_full$cond_hdp <- ifelse(output_full$cond_hdp==0, "No", 
+                               ifelse(output_full$cond_hdp==1, "Yes", NA))
+output_full$cond_hdp <- factor(output_full$cond_hdp, levels=c("No", "Yes"))
+
+output_full$cond_gdm <- ifelse(output_full$cond_gdm==0, "No", 
+                               ifelse(output_full$cond_gdm==1, "Yes", NA))
+output_full$cond_gdm <- factor(output_full$cond_gdm, levels=c("No", "Yes"))
+
+
+output_full$demchild_race <- ifelse(output_full$demchild_race==1, "White", 
+                                        ifelse(output_full$demchild_race==2, "Black",
+                                               ifelse(output_full$demchild_race==-8 | output_full$demchild_race==-9, "Missing",
+                                                      "Other or multiple races")))
+output_full$demchild_race <- factor(output_full$demchild_race, levels=c("White", "Black","Other or multiple races","Missing"))
+
+output_full$demchild_hispanic <- ifelse(output_full$demchild_hispanic==1, "Hispanic",
+                                            ifelse(output_full$demchild_hispanic==0, "Non-Hispanic", "Missing"))
+output_full$demchild_hispanic <- factor(output_full$demchild_hispanic, levels=c("Hispanic", "Non-Hispanic", "Missing"))
+
+output_full$demchild_sex <- ifelse(output_full$demchild_sex==1, "Male", 
+                                   ifelse(output_full$demchild_sex==2, "Female", "Missing" ))
+output_full$demchild_sex <- factor(output_full$demchild_sex, levels=c("Male", "Female", "Missing"))
+
+
+output_full$birth_delivm <- ifelse(is.na(output_full$birth_delivm), "Missing", output_full$birth_delivm)
+output_full$birth_delivm <- as.factor(output_full$birth_delivm)
+output_full$birth_delivm <- factor(output_full$birth_delivm, levels=c("1", "2", "Missing"),
+                                   labels = c("Vaginal", "C-section", "Missing"))
+
+output_full$par_parous <- factor(output_full$par_parous, levels=c("0", "1"), 
+                                 labels = c("Yes", "No"))
+
+output_full$ifp_bfever <- ifelse(output_full$ifp_bfever==1, "Yes", ifelse(output_full$ifp_bfever==0, "No", 
+                                                                          ifelse(output_full$ifp_bfever==-8, NA, output_full$ifp_bfever)))
+output_full$ifp_bfever <- factor(output_full$ifp_bfever, levels=c("Yes", "No"))
+
+
+output_full$med_antib_intra <- factor(output_full$med_antib_intra, levels=c("0", "1"),
+                                      labels=c("No", "Yes"))
+
+output_full$cond_infection_any <- factor(output_full$cond_infection_any, levels=c("0", "1", "-8"),
+                                         labels=c("No", "Yes", "Unknown"))
+```
+
+
+```{r  include=FALSE}
+label(output_full$demchild_mat_age) <- "Age at delivery, years"
+label(output_full$demchild_mat_race) <-  "Race"
+label(output_full$demchild_mat_hispanic) <- "Ethnicity"
+label(output_full$sespreg_educ3) <- "Highest education"
+label(output_full$anthr_bmi_pp) <- "Pre-pregnancy BMI"
+label(output_full$anthr_bmicat4_pp) <- "Pre-pregnancy BMI Category"
+label(output_full$med_antib_pn) <- "Prenatal antibiotics"
+label(output_full$cond_hdp) <- "Hypertensive disorders of pregnancy"
+label(output_full$cond_gdm) <- "Gestational diabetes"
+label(output_full$demchild_race) <-  "Race"
+label(output_full$demchild_hispanic) <- "Ethnicity"
+label(output_full$demchild_sex) <- "Biological sex"
+label(output_full$birth_delivm) <- "Delivery mode"
+label(output_full$birth_ga) <- "Gestational age at birth, weeks"
+label(output_full$birth_bw) <- "Birth weight, kg"
+label(output_full$ifp_bfever) <- "Ever breastfed during first year"
+#label(output_full$age_mo) <- "Age at first microbiome measurement, months"
+label(output_full$par_parity) <- "Parity"
+label(output_full$par_parous) <- "Nulliparous"
+label(output_full$med_antib_intra) <- "Intrapartum antibiotics"
+label(output_full$cond_infection_any) <- "Any infection during pregnancy"
+```
+
+## Overall
+```{r echo=FALSE}
+table1(~ demchild_mat_age + demchild_mat_race + demchild_mat_hispanic + sespreg_educ3 + 
+         anthr_bmi_pp + anthr_bmicat4_pp + par_parity + par_parous + 
+         med_antib_pn + med_antib_intra + cond_infection_any + cond_hdp + cond_gdm + 
+         demchild_race + demchild_hispanic + demchild_sex +
+         birth_delivm + 
+         birth_ga + birth_bw + ifp_bfever | cohort,
+         data=output_full, topclass="Rtable1-grid")
+
+```
+  
+
+
+

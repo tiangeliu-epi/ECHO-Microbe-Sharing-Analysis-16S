@@ -1,0 +1,142 @@
+---
+title: "Table. Overview of microbiota sequencing techniques"
+author: "Tiange Liu"
+date: "2023-08-17"
+output: html_document
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",  
+    )
+  })
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(table1)
+library(dplyr)
+library(tidyverse)
+```
+
+# Import master file associated with microbiome data
+```{r message=FALSE, warning=FALSE}
+exp_dta <- read.delim("//echofile.rti.ns/DAC/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/m16s_der_hpc_0556a.tsv")
+
+# Exclude Emory cohort
+exp_dta <- filter(exp_dta, CohortID!=10901)  
+
+```
+
+
+# Import IDs that contribute to OIF analysis 
+```{r}
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+
+march <- read.csv(paste0(path, "Results/feast_12902_080823.csv"))
+vdaart <- read.csv(paste0(path, "Results/feast_12301_072823.csv"))
+rochester <- read.csv(paste0(path, "Results/feast_12601_072823.csv"))
+wisc <- read.csv(paste0(path, "Results/feast_11305_072823.csv"))
+
+
+### For resonance, find mothers who contributed the last measurement and its offspring
+resonance <- filter(exp_dta, CohortID==10703)
+
+# Keep paired samples only
+resonance$paired_ID <- substr(resonance$ParticipantID, 1, 9)
+common_id <- intersect(resonance[resonance$m16s_part_type==2,]$paired_ID, resonance[resonance$m16s_part_type==1,]$paired_ID)
+resonance <- filter(resonance, paired_ID %in% common_id)
+
+# Create a variable indicating measurement order 
+resonance <- resonance[order(resonance$m16s_age_yr), ] %>%
+  group_by(m16s_part_type, ParticipantID) %>%
+  mutate(order=seq(1:n()))
+
+# for mothers, keep the last measurement
+resonance <- resonance[order(resonance$m16s_age_yr), ] %>%
+  group_by(m16s_part_type, ParticipantID) %>%
+  mutate(max_order=n())
+
+resonance <- resonance %>% filter(m16s_part_type==2 | (m16s_part_type==1 & order==max_order))
+common_id <- intersect(resonance[resonance$m16s_part_type==2,]$paired_ID, resonance[resonance$m16s_part_type==1,]$paired_ID)
+resonance <- filter(resonance, paired_ID %in% common_id)
+
+table(resonance$m16s_part_type, resonance$m16s_spec_type)
+```
+
+
+
+# Only keep participants that contributed to OIF analysis
+```{r}
+march2 <- filter(exp_dta, (substr(exp_dta$ParticipantID, 1, 9) %in% as.list(march$PregID)))
+march2 <- filter(march2, str_detect(sample.id, "Set6"))
+
+exp_dta <- filter(exp_dta, (substr(exp_dta$ParticipantID, 1, 9) %in% as.list(march$PregID)) |
+                    (exp_dta$sample.id %in% as.list(march$sample.id)) |
+                    (substr(exp_dta$ParticipantID, 1, 9) %in% as.list(substr(vdaart$ParticipantID, 1, 9))) |
+                    (substr(exp_dta$ParticipantID, 1, 9) %in% as.list(substr(rochester$ParticipantID, 1, 9))) |
+                    (substr(exp_dta$ParticipantID, 1, 9) %in% as.list(substr(wisc$ParticipantID, 1, 9))) |
+                    (exp_dta$sample.id %in% as.list(resonance$sample.id)))
+exp_dta <- filter(exp_dta, !(sample.id %in% as.list(march2$sample.id)))
+
+```
+
+# Modify variable labels
+```{r}
+table(exp_dta$CohortID)
+exp_dta$CohortID <- as.factor(exp_dta$CohortID)
+exp_dta$CohortID <- factor(exp_dta$CohortID, levels=c("12902", "10703", "12301", "12601", "11305"),
+                           labels=c("MARCH", "RESONANCE", "VDAART", "ROCHESTER", "WISC"))
+
+
+table(exp_dta$m16s_dna_extr_kit)
+exp_dta$m16s_dna_extr_kit <- as.factor(exp_dta$m16s_dna_extr_kit)
+exp_dta$m16s_dna_extr_kit <- factor(exp_dta$m16s_dna_extr_kit, levels=c("1", "4", "10", "12"),
+                                    labels = c("MoBio PowerSoil Kit", 
+                                               "Qiagen QIAmp", 
+                                               "In house chemical based extraction", 
+                                               "Zymo Fec So Quick DNA"))
+table(exp_dta$m16s_amp_rgn)
+exp_dta$m16s_amp_rgn <- as.factor(exp_dta$m16s_amp_rgn)
+exp_dta$m16s_amp_rgn <- factor(exp_dta$m16s_amp_rgn, levels=c("2", "3", "7"),
+                               labels=c("V3-V4", "V4", "Other"))
+
+table(exp_dta$m16s_lab_instr)
+exp_dta$m16s_lab_instr <- as.factor(exp_dta$m16s_lab_instr)
+exp_dta$m16s_lab_instr <- factor(exp_dta$m16s_lab_instr, levels=c("1", "10", "Illumina NextSeq 550"),
+                                 labels=c("Illumina MiSeq", "Illumina NextSeq", "Illumina NextSeq 550"))
+
+table(exp_dta$m16s_spec_type)
+exp_dta$m16s_spec_type <- as.factor(exp_dta$m16s_spec_type)
+exp_dta$m16s_spec_type <- factor(exp_dta$m16s_spec_type, levels=c("1", "7"),
+                                 labels=c("Stool", "Vagina"))
+
+```
+
+```{r}
+table(exp_dta[exp_dta$m16s_coll_year==1799,]$sample.id, exp_dta[exp_dta$m16s_coll_year==1799,]$m16s_part_type)
+table(exp_dta[str_detect(exp_dta$sample.id, "11305.HJR274-01"),]$m16s_coll_year, exp_dta[str_detect(exp_dta$sample.id, "11305.HJR274-01"),]$m16s_coll_date)
+exp_dta$m16s_coll_year <- ifelse(exp_dta$sample.id=="11305.HJR274-01-A.003.Set1.16S", 2015, exp_dta$m16s_coll_year)
+```
+
+# Summarize sequencing methods by cohort, participant type, and body site  
+## Among mothers 
+```{r}
+table1( ~ factor(m16s_dna_extr_kit) + factor(m16s_amp_rgn) +
+          factor(m16s_prim_fwd_seq) + factor(m16s_prim_rev_seq) + factor(m16s_lab_instr) + factor(m16s_coll_tmst)| factor(CohortID)*factor(m16s_spec_type), data=exp_dta[exp_dta$m16s_part_type==1, ])
+```
+
+## Among children
+```{r}
+table1( ~factor(m16s_coll_year) + factor(m16s_dna_extr_kit) + factor(m16s_amp_rgn) +
+          factor(m16s_prim_fwd_seq) + factor(m16s_prim_rev_seq) + factor(m16s_lab_instr) | factor(CohortID), data=exp_dta[exp_dta$m16s_part_type==2, ])
+```
+
+## Among all
+```{r}
+table1( ~ factor(m16s_dna_extr_kit) + factor(m16s_amp_rgn) +
+          factor(m16s_prim_fwd_seq) + factor(m16s_prim_rev_seq) + factor(m16s_lab_instr) | factor(CohortID), data=exp_dta)
+```
