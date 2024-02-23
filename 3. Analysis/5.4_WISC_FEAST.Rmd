@@ -1,0 +1,314 @@
+---
+title: "Analyze WISC vaginal - fecal data"
+author: "Tiange Liu"
+date: "2023-07-28"
+output: html_document
+---
+
+
+```{r set up, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(dplyr)
+library(qiime2R)
+library(ggplot2)
+library(ggpubr)
+library(FEAST)
+library(table1)
+```
+
+# Read in participant data, explore, and modify
+```{r}
+full_dta <- read.delim("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/m16s_der_hpc_0556a.tsv")
+
+table(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- as.factor(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- factor(full_dta$m16s_part_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+table(full_dta$m16s_spec_type)
+full_dta$body_site <- as.factor(full_dta$m16s_spec_type)
+full_dta$body_site <- factor(full_dta$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+
+```
+
+# Explore WISC data and keep paired samples
+```{r fig.width=13, fig.height=5}
+wisc <- filter(full_dta, CohortID==11305)
+
+### Check number and type of samples
+table(wisc$m16s_part_type, wisc$body_site)
+  # 136 maternal samples, 272 children samples; 
+length(unique(wisc[wisc$m16s_part_type=="biological mother",]$ParticipantID)) 
+  # 136 unique mothers
+length(unique(wisc[wisc$m16s_part_type=="child",]$ParticipantID)) 
+  # 145 unique children  
+
+
+### Keep paired samples only
+wisc$paired_ID <- substr(wisc$ParticipantID, 1, 9)
+common_id <- intersect(wisc[wisc$m16s_part_type=="child",]$paired_ID, wisc[wisc$m16s_part_type=="biological mother",]$paired_ID)
+wisc <- filter(wisc, paired_ID %in% common_id)
+
+setdiff(wisc[wisc$m16s_part_type=="child",]$paired_ID, common_id)
+
+table(wisc$m16s_part_type, wisc$body_site)
+  # 135 maternal samples, 257 children samples; 
+
+length(unique(wisc[wisc$m16s_part_type=="biological mother",]$ParticipantID)) 
+length(unique(wisc[wisc$m16s_part_type=="child",]$ParticipantID)) 
+  # 137 pairs
+length(unique(wisc[wisc$m16s_part_type=="child",]$paired_ID)) 
+
+# exclude YZW353-01-B and VGT352-01-B child samples (likely duplicates)
+wisc <- filter(wisc, ParticipantID!="YZW353-01-B" & ParticipantID!="VGT352-01-B")
+length(unique(wisc[wisc$m16s_part_type=="child",]$ParticipantID)) 
+  # 135 mother-child pairs
+table(wisc$m16s_part_type, wisc$body_site)
+  # 135 maternal samples, 253 children samples; 
+
+
+
+### Create a variable indicating measurement order 
+wisc <- wisc[order(wisc$m16s_age_yr), ] %>%
+  group_by(m16s_part_type, ParticipantID) %>%
+  mutate(order=seq(1:n()))
+
+
+### For maternal samples, check timing of collection
+table(wisc[wisc$m16s_part_type=="biological mother",]$m16s_coll_tmst)
+  # all indicated 3rd trimester
+
+table(wisc[wisc$m16s_part_type=="biological mother",]$m16s_lifestage)
+  # all indicated 1 (preconception), which is NOT consistent with 3rd trimester
+
+
+
+### For child samples, check sample size and age at collection
+# plot child sample size by measurement order
+wisc <- wisc %>% 
+  group_by(m16s_part_type, order) %>%
+  mutate(sample_size=n())
+
+p1 <- ggplot(wisc[wisc$m16s_part_type=="child",], aes(x=order, y=m16s_age_yr, group=ParticipantID)) + 
+  geom_point(aes(color=factor(order)), size=2) + geom_line() + 
+  labs(x="Order of Measurement", y="Child's Age at Time of Measurement (Years)", color="Order of Measurement") +
+  theme_bw() + geom_text(data=wisc[wisc$m16s_part_type=="child",], aes(x=order, y=1.5, label=paste("n=", sample_size))) +
+  theme(legend.position = "none")
+
+# plot child sample size by age 
+p2 <- ggplot(wisc[wisc$m16s_part_type=="child",], aes(x=m16s_age_yr,  fill=factor(order))) + 
+  geom_histogram(binwidth=0.1, color="white",) + 
+  labs(y="Sample Size", x="Child's Age at Time of Measurement (Years)", fill="Order of Measurement") + 
+  theme_bw() + theme(legend.position = c(0.83, 0.83), legend.direction = "horizontal") 
+
+ggarrange(p1, p2, nrow=1, common.legend = TRUE, legend="bottom")
+
+```
+
+# Read in covariates
+```{r}
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_072823_v3.csv")
+master_dt <- master_dt[, -c(1)]
+```
+
+
+# Prepare for FEAST analysis
+```{r}
+### Import ASV table
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/11305_asv_table_classic.tsv")
+
+asv_table <- as.data.frame(t(asv_table)) # make sure rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ] # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+
+
+
+### Prepare meta input dataset
+meta_dt <- wisc
+
+meta_dt <- meta_dt[, c("sample.id", "paired_ID", "m16s_part_type", "order")]
+meta_dt <- meta_dt[order(meta_dt$sample.id), ] 
+
+# create Sink/Source variable
+meta_dt$SourceSink <- ifelse(meta_dt$m16s_part_type=="child", "Sink", "Source")
+  # child microbiome = sink, maternal microbiome = source
+
+
+
+### Create separate meta dataset and ASV table for each child measurement (2 in total)
+table(meta_dt$order, meta_dt$m16s_part_type)
+mother_dt <- meta_dt %>% filter(m16s_part_type=="biological mother")
+
+for(i in 1:max(meta_dt$order)){
+  ## create meta dataset
+  dt <- rbind(
+    filter(mother_dt, paired_ID %in% as.list(meta_dt[meta_dt$order==i,]$paired_ID)), 
+    meta_dt[meta_dt$order==i & meta_dt$m16s_part_type=="child",])
+  
+  # create ID variable
+  dt <- dt[order(dt$sample.id), ]
+  dt$id <- 1
+  n <- 1
+  for(x in 2:nrow(dt)){
+    if(dt$SourceSink[x]=="Source"){
+      dt$id[x] <- n+1
+      n <- n+1
+    }else{
+      dt$id[x] <- dt$id[x-1]
+    }
+  }
+  dt$id <- as.integer(dt$id) # integer is required by FEAST
+
+  # create environment variable
+  dt$Env <- paste(dt$m16s_part_type, dt$id)
+  dt <- as.data.frame(dt)
+  row.names(dt) <- dt$sample.id
+
+  
+  ## create asv table
+  asv <- asv_table %>% filter(row.names(asv_table) %in% as.list(dt$sample.id))
+  row_names <- row.names(asv)
+
+  asv <- as.data.frame(lapply(asv, as.integer))   # transform counts to integer, which is required by FEAST
+
+  row.names(asv) <- row_names
+
+  asv <- asv[order(row.names(asv)), ]
+  asv <- as.matrix(asv)
+
+  
+  ## assign name
+  dt <- dt[, c("Env", "SourceSink", "id")]
+  assign(paste0("meta_dt_", i), dt)
+  assign(paste0("asv_table_", i), asv)
+  rm(row_names)
+  rm(dt)
+  rm(asv)
+}
+
+
+# check if rownames match (required by FEAST)
+length(intersect(rownames(meta_dt_1), rownames(asv_table_1)))
+length(intersect(rownames(meta_dt_2), rownames(asv_table_2)))
+```
+
+
+# Run FEAST
+```{r eval=FALSE, warning=FALSE, include=FALSE}
+set.seed(720)
+
+f1 <- FEAST(C = asv_table_1, meta_dt_1, different_sources_flag = 1,
+      dir_path="Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",           
+      outfile="feast_11305_order1_072123")
+
+f2 <- FEAST(C = asv_table_2, meta_dt_2, different_sources_flag = 1,
+      dir_path="Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",           
+      outfile="feast_11305_order2_072123")
+  # default: 1000 EM iteration; 
+  # rarefied at minimal sequencing depth within each group of sink and corresponding source
+```
+
+
+# Modify FEAST output for visulization
+```{r}
+output1 <- read.table("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results/feast_11305_order1_072123_source_contributions_matrix.txt")
+
+output2 <- read.table("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results/feast_11305_order2_072123_source_contributions_matrix.txt")
+
+
+# modify output 
+modify_output <- function(output){
+  output$other <- output$Unknown * 100
+  output$vaginal <- 100 - output$other
+    # multiply all estimated contributions by 100 to get the proportion (%)
+  output$sample.id <- row.names(output)
+  output$sample.id <- substr(output$sample.id, 1,30)
+  output <- output[, c("sample.id", "vaginal", "other")]
+  output$ParticipantID <- substr(output$sample.id, 7, 17)
+  
+  # add covariates
+  output <- merge(output, master_dt[, -c(1)], by.x="ParticipantID", by.y="ParticipantID.x", all=FALSE)
+  output$ParticipantID.y <- NULL
+  output <- distinct(output)
+
+  return(output)
+}
+
+output1 <- modify_output(output1)
+output1 <- distinct(output1, sample.id, .keep_all=TRUE)
+output2 <- modify_output(output2)
+output2 <- distinct(output2, sample.id, .keep_all=TRUE)
+
+
+output_full <- rbind(output1, output2)
+
+
+# add age and order
+output_full <- merge(output_full, wisc[, c("sample.id", "m16s_age_yr", "order")], by="sample.id")
+
+
+# re-label some variables
+output_full$birth_delivm <- as.factor(output_full$birth_delivm)
+output_full$birth_delivm <- factor(output_full$birth_delivm, levels=c("1","2"), labels=c("Vaginal delivery", "Cesarean delivery"))
+table(output_full[output_full$order==1,]$birth_delivm)
+
+output_full$med_antib_pn <- as.factor(output_full$med_antib_pn)
+output_full$med_antib_pn <- factor(output_full$med_antib_pn, levels=c("0", "1"), labels=c("No antibiotics", "Took antibiotics"))
+table(output_full[output_full$order==1,]$med_antib_pn) 
+
+```
+
+
+# Table 1
+```{r}
+colnames(output_full)
+
+output_full$demchild_mat_age <- ifelse(output_full$demchild_mat_age==-9, NA, output_full$demchild_mat_age)
+
+table1(~ demchild_mat_age + factor(demchild_mat_race) + factor(demchild_mat_hispanic) + factor(demchild_race) + factor(demchild_hispanic) + factor(demchild_sex) +
+         factor(sespreg_educ3) + factor(birth_delivm) + factor(birth_sga) + factor(birth_lga) + factor(birth_ga_preterm) + factor(anthr_bmicat4_pp) + factor(med_antib_pn) ,
+         data=output_full[output_full$order==1,])
+```
+
+
+# Visualize FEAST results by age - overall
+```{r}
+ggplot(output_full, aes(x=m16s_age_yr*12, y=vaginal)) + geom_point() +
+  labs(x="Child's Age at Time of Measurement (Months)", 
+       y="Contribution of Maternal Vaginal Microbiota (%)") +
+  geom_smooth(method="loess" , color="red", fill="#69b3a2", se=TRUE) +
+  theme_bw() 
+
+```
+
+# Visualize FEAST results by age - by delivery mode
+```{r}
+ggplot(output_full, aes(x=m16s_age_yr*12, y=vaginal, color=birth_delivm)) + geom_point() +
+  labs(x="Child's Age at Time of Measurement (Months)", 
+       y="Contribution of Maternal Vaginal Microbiota (%)") +
+  geom_smooth(aes(color=birth_delivm), method=lm ,  se=TRUE) +
+  theme_bw() 
+
+```
+# Visualize FEAST results by age - by antibiotics
+```{r}
+ggplot(output_full, aes(x=m16s_age_yr*12, y=vaginal, color=med_antib_pn)) + geom_point() +
+  labs(x="Child's Age at Time of Measurement (Months)", 
+       y="Contribution of Maternal Vaginal Microbiota (%)") +
+  geom_smooth(aes(color=med_antib_pn), method=lm ,  se=TRUE) +
+  theme_bw() 
+
+```
+
+# Save output
+```{r}
+colnames(output_full)[3] <- "contribution" 
+output_full$cohort <- "WISC"
+output_full$m_body_site <- "Vaginal"
+
+write.csv(output_full, "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results/feast_11305_091123.csv", row.names=FALSE)
+```
+

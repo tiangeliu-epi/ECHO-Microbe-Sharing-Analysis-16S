@@ -1,0 +1,366 @@
+---
+title: "FEAST Analysis for MARCH 16S Microbiome (12902) using 23 dyads (3rd trimester) using randomized mothers"
+author: "Tiange Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",  
+    )
+  })
+---
+
+```{r set up, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+#library(qiime2R)
+#library(FEAST)
+library(data.table)
+library(table1)
+library(tidyr)
+library(readr)
+library(tidyverse)
+
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+```
+
+# Read in participant data, explore, and modify
+```{r}
+march <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/12902/MARCH_paired_54.csv")
+  # these 54 dyads include additional 4 infants: set 6, 5-6 months when samples were collected
+
+table(march$m16s_part_type)
+march$participant_type <- as.factor(march$m16s_part_type)
+march$participant_type <- factor(march$participant_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+table(march$m16s_spec_type)
+march$body_site <- as.factor(march$m16s_spec_type)
+march$body_site <- factor(march$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+
+march$paired_ID <- substr(march$ParticipantID, 1, 9)
+```
+
+# Read in covariates 
+```{r}
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_072823_v3.csv")
+
+# re-label some variables
+master_dt$birth_delivm <- as.factor(master_dt$birth_delivm)
+master_dt$birth_delivm <- factor(master_dt$birth_delivm, levels=c("-5", "1","2"), labels=c("Missing", "Vaginal delivery", "Cesarean delivery"))
+
+master_dt$med_antib_pn <- as.factor(master_dt$med_antib_pn)
+master_dt$med_antib_pn <- factor(master_dt$med_antib_pn, levels=c("-8", "0", "1"), labels=c("Missing", "No antibiotics", "Took antibiotics"))
+
+## Merge with covariates
+march <- merge(march, master_dt[, -c(1)], by.x="paired_ID", by.y="PregID", all=FALSE)
+
+## Exclude infant with missing delivery mode
+march <- filter(march, !is.na(birth_delivm))
+
+## Restrict to 3rd trimester maternal samples
+march <- filter(march, paired_ID %in% as.list(march[march$body_site=="vaginal" & march$m16s_coll_tmst==3,]$paired_ID))
+```
+
+# FEAST
+## Prepare ASV table for FEAST
+```{r}
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/12902_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+#asv_table$type 
+#asv_table$data[1:10, 1:10]
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+
+# only keep paired samples
+asv_table_paired <- asv_table %>% filter(row.names(asv_table) %in% as.list(march$sample.id))
+row_names <- row.names(asv_table_paired)
+
+str(asv_table_paired[1:5, 1:5]) # counts are not integer now
+asv_table_paired <- as.data.frame(lapply(asv_table_paired, as.integer)) 
+  # transform counts to integer, which is required by FEAST
+
+row.names(asv_table_paired) <- row_names
+
+asv_table_paired <- asv_table_paired[order(row.names(asv_table_paired)), ]
+asv_table_paired <- as.matrix(asv_table_paired)
+  # this will be the input ASV table for FEAST
+```
+
+
+## Prepare input meta table for FEAST
+```{r}
+meta_dt <- march[, c("sample.id", "paired_ID", "body_site", "participant_type")]
+meta_dt <- meta_dt[order(meta_dt$sample.id, decreasing = TRUE), ] 
+
+meta_dt$SourceSink <- ifelse(meta_dt$participant_type=="child", "Sink", "Source")
+  # child microbiome = sink, maternal microbiome = source
+
+# per requirement of FEAST, each pair should have same id
+meta_dt$id <- 1
+n <- 1
+for(i in 2:nrow(meta_dt)){
+  if(meta_dt$SourceSink[i]=="Sink"){
+    meta_dt$id[i] <- n+1
+    n <- n+1
+  }else{
+    meta_dt$id[i] <- meta_dt$id[i-1]
+  }
+}
+
+meta_dt$Env <- paste(meta_dt$participant_type, meta_dt$body_site, meta_dt$id)
+
+row.names(meta_dt) <- meta_dt$sample.id
+meta_dt <- meta_dt[, c("sample.id", "Env", "SourceSink", "id")]
+meta_dt$id <- as.integer(meta_dt$id) # integer is required by FEAST
+meta_dt <- meta_dt[order(meta_dt$sample.id), ]
+meta_dt <- as.data.frame(meta_dt)
+meta_dt <- meta_dt[, c("Env", "SourceSink", "id")]
+  # this will be the input metadata for FEAST
+
+# check if rownames match (required by FEAST)
+common.sample.ids <- intersect(rownames(meta_dt), rownames(asv_table_paired))
+length(common.sample.ids) # 69
+```
+   
+## Prepare another meta data with randomized mothers
+```{r}
+set.seed(60423)
+
+# with only randomized mothers as sources
+meta_dt_rand <- meta_dt %>%
+    rownames_to_column("FEAST_id") %>%
+    group_by(id, SourceSink) %>%
+    nest() %>%
+    group_by(SourceSink) %>%
+    mutate(id = if_else(SourceSink == "Source", sample(id, replace = F), id)) %>%
+    ungroup() %>%
+    unnest(data) %>%
+    arrange(id, SourceSink) %>%
+    column_to_rownames("FEAST_id") 
+
+meta_dt_rand$Env <-gsub("biological", "unrelated", meta_dt_rand$Env)
+
+# check if rownames match (required by FEAST)
+common.sample.ids <- intersect(rownames(meta_dt_rand), rownames(asv_table_paired))
+length(common.sample.ids) # 69
+```
+
+## Prepare another meta data and ASV table so that each infant has a biological mother and a randomized mother
+```{r}
+meta_dt_rand2 <- filter(meta_dt_rand, SourceSink=="Source")
+meta_dt_rand2 <- rbind(meta_dt_rand2, meta_dt)
+
+
+pattern <- "01-0.001"
+
+# Check if row names contain the specific pattern
+rows_to_duplicate <- grepl(pattern, rownames(asv_table_paired))
+
+# Duplicate rows for the matching pattern
+duplicated_rows <- as.data.frame(asv_table_paired[rows_to_duplicate, ])
+
+# Add the duplicated rows to the original dataframe
+asv_table_paired2 <- rbind(as.data.frame(asv_table_paired), duplicated_rows)
+
+asv_table_paired2 <- as.matrix(asv_table_paired2)
+  # this will be the input ASV table for FEAST
+
+
+# check if rownames match (required by FEAST)
+common.sample.ids <- intersect(rownames(meta_dt_rand2), rownames(asv_table_paired2))
+length(common.sample.ids) # 115
+```
+
+## Run FEAST
+```{r eval=FALSE, warning=FALSE, include=FALSE}
+set.seed(60423)
+FEAST_output_rand <- FEAST(C = asv_table_paired, metadata = meta_dt_rand, different_sources_flag = 1, 
+                      dir_path="Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",   
+                      outfile="feast_12902_101823_rand1")
+  # default: 1000 EM iteration; 
+  # rarefied at minimal sequencing depth within each group of sink and corresponding source
+
+set.seed(60423)
+FEAST_output_rand2 <- FEAST(C = asv_table_paired2, metadata = meta_dt_rand2, different_sources_flag = 1, 
+                      dir_path="Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",   
+                      outfile="feast_12902_101823_rand2")
+```
+
+
+# Modify FEAST output for visulization (randomized mother)
+```{r}
+output <- read.table("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results/feast_12902_101823_rand1_source_contributions_matrix.txt")
+
+# select columns containing results when mother stool is the source
+output_stool <- output %>% select(contains("stool"))
+
+# select columns containing results when mother vagina is the source
+output_vagina <- output %>% select(contains("vaginal"))  
+
+# generate a new output 
+output_full <- as.data.frame(row.names(output))
+output_full$stool <- rowSums(output_stool, na.rm = TRUE) * ifelse(rowSums(is.na(output_stool)) == ncol(output_stool), NA, 1) * 100
+output_full$vaginal <- rowSums(output_vagina, na.rm = TRUE) * ifelse(rowSums(is.na(output_vagina)) == ncol(output_vagina), NA, 1) * 100
+  # keep it as NA if no data from the corresponding mother and body site
+
+output_full$unknown <- output$Unknown * 100
+  # multiply all estimated contributions by 100 to get the proportion (%)
+
+colnames(output_full)[1] <- "sample.id"
+output_full$sample.id <- substr(output_full$sample.id, 1,30)
+
+output_full <- filter(output_full, !is.na(stool) | !is.na(vaginal))
+output_full$ParticipantID <- substr(output_full$sample.id, 7, 17)
+
+
+# add covariates
+output_full <- merge(output_full, master_dt[, -c(1)], by.x="ParticipantID", by.y="ParticipantID.x", all=FALSE)
+
+output_full$ParticipantID.y <- NULL
+
+# add age
+output_full <- merge(output_full, march[, c("sample.id", "m16s_age_yr")], by="sample.id")
+
+
+table(output_full$birth_delivm)
+
+table(output_full$med_antib_pn)
+
+table(output_full$birth_delivm, output_full$med_antib_pn)
+
+# convert from wide to long
+output_full_3 <- filter(output_full, !is.na(stool) & !is.na(vaginal))
+output_full_3 <- gather(output_full_3, type, prop, stool:unknown, factor_key=TRUE)
+output_full_3$type <- factor(output_full_3$type, levels=c("stool", "vaginal", "unknown"),
+                                labels=c("Stool", "Vagina", "Other"))
+length(unique(output_full_3$sample.id))
+
+
+march <- output_full_3
+march$type <- factor(march$type, levels=c("Other", "Vagina", "Stool"), labels=c("Other", "Maternal vaginal", "Maternal fecal"))
+
+```
+
+# Visualize randomize mother results
+```{r}
+march$type <- factor(march$type, levels=c("Other", "Maternal fecal", "Maternal vaginal"), 
+                     labels=c("Other", "Maternal fecal microbiota", "Maternal vaginal microbiota"))
+
+color7 <- c("white","#006A8D", "#B27F10") # white, dark blue, dark yellow
+
+# overall
+march %>%
+  group_by(type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = 2, y = mean, fill = type)) +
+    geom_col(color="black", lwd=1) +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    geom_text(aes(x=0.5, y=0, label=paste0("Infant\nFecal Microbiota")), size=6) +
+    theme_void() + theme(legend.position = "none")
+
+
+```
+
+# Visualize biological + randomize mother results
+```{r}
+output_2 <- read.table("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results/feast_12902_101823_rand2_source_contributions_matrix.txt")
+
+row.names(output_2) <- row.names(output)
+
+
+# select columns containing results when mother stool is the source
+output_stool_1 <- output_2 %>% select(contains("stool") & contains("biological"))
+output_stool_2 <- output_2 %>% select(contains("stool") & contains("unrelated"))
+
+# select columns containing results when mother vagina is the source
+output_vagina_1 <- output_2 %>% select(contains("vaginal") & contains("biological"))  
+output_vagina_2 <- output_2 %>% select(contains("vaginal") & contains("unrelated"))  
+
+# generate a new output 
+output_full_2 <- as.data.frame(row.names(output_2))
+output_full_2$stool_bio <- rowSums(output_stool_1, na.rm = TRUE) * ifelse(rowSums(is.na(output_stool_1)) == ncol(output_stool_1), NA, 1) * 100
+output_full_2$stool_un <- rowSums(output_stool_2, na.rm = TRUE) * ifelse(rowSums(is.na(output_stool_2)) == ncol(output_stool_2), NA, 1) * 100
+
+output_full_2$vaginal_bio <- rowSums(output_vagina_1, na.rm = TRUE) * ifelse(rowSums(is.na(output_vagina_1)) == ncol(output_vagina_1), NA, 1) * 100
+output_full_2$vaginal_un <- rowSums(output_vagina_2, na.rm = TRUE) * ifelse(rowSums(is.na(output_vagina_2)) == ncol(output_vagina_2), NA, 1) * 100
+
+output_full_2$unknown <- output_2$Unknown * 100
+
+```
+
+
+```{r fig.height=8, fig.width=9}
+junk <- gather(output_full_2, type, prop, stool_bio:unknown, factor_key=TRUE)
+junk$type <- factor(junk$type, levels=c("unknown", "stool_bio", "stool_un", "vaginal_bio", "vaginal_un"),
+                                labels=c("Other", "Biological maternal fecal microbiota", "Unrelated maternal fecal microbiota",
+                                         "Biological maternal vaginal microbiota", "Unrelated maternal vaginal microbiota"))
+
+color <- c("white","#006A8D", "#ADD8E6", "#B27F10", "#FFFF99") 
+
+p1 <- junk %>%
+  group_by(type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = 2, y = mean, fill = type)) +
+    geom_col(color="black", lwd=1) +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values=color) + labs(fill="Source") +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    geom_text(aes(x=0.5, y=0, label=paste0("Infant\nFecal Microbiota")), size=6) +
+    theme_void() + theme(legend.position = "right", legend.title = element_text(face="bold", size=15), legend.text = element_text(size=15))
+
+```
+
+```{r fig.height=5}
+p2 <- junk %>%
+  ggplot(aes(x=type, y = prop, fill=type)) +
+  geom_boxplot() +
+  scale_fill_manual(values=color) + labs(fill="Source") + ylab("Contribution of source (%)") +
+  theme_bw() +
+  stat_compare_means(method = "wilcox.test", paired=TRUE, 
+                     comparisons = list(c("Biological maternal fecal microbiota", "Unrelated maternal fecal microbiota"),
+                                        c("Biological maternal vaginal microbiota", "Unrelated maternal vaginal microbiota"),
+                                        c("Biological maternal fecal microbiota", "Biological maternal vaginal microbiota"),
+                                        c("Unrelated maternal fecal microbiota", "Unrelated maternal vaginal microbiota"))) +
+  stat_summary(geom = "point", fun = "mean", col = "black", size = 3, shape = 24, fill = "red") +
+  theme(axis.title.x = element_blank(), axis.ticks.x = element_blank(), axis.text.x = element_blank(),
+        axis.title.y = element_text(size=15, face="bold"), axis.text = element_text(size=13), 
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        legend.position = "right", legend.title = element_text(face="bold", size=15), legend.text = element_text(size=15)) +
+  scale_y_continuous(limits = c(0, 120), breaks = c(0, 20, 40, 60, 80, 100))
+
+
+
+```
+
+```{r fig.height=6, fig.width=13}
+p <- ggarrange(p1, p2 + theme(plot.margin = unit(c(3, 1, 3, 0), "cm")), 
+          nrow=1, widths=c(1, 1), common.legend = TRUE, legend = "right",
+          labels = c("A", "B"), vjust=6, font.label = list(size = 18))
+
+p
+```
+
+```{r eval=FALSE, include=FALSE}
+    ggsave(p, filename = "MARCH_3rdtms_FEAST_randomize_101923.png",
+       path =  paste0(path, "Figures"),
+       height = 6, width = 13, units = "in", dpi = 500)
+```

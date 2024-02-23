@@ -1,0 +1,685 @@
+---
+title: "Estimate the Overlap between Maternal Vaginal and Fecal microbiota in MARCH"
+author: "Tiange Liu"
+date: "`r Sys.Date()`"
+output: html_document
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",  
+    )
+  })
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(qiime2R)
+library(FEAST)
+library(data.table)
+library(table1)
+library(tidyr)
+library(readr)
+library(tidyverse)
+source("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/ANALYSIS/Codes/OIF_Function.r")
+```
+
+
+# Read in participant data, explore, and modify
+```{r message=FALSE}
+march <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/12902/MARCH_paired_54.csv")
+  # these 54 dyads include additional 4 infants: set 6, 5-6 months when samples were collected
+
+table(march$m16s_part_type)
+march$participant_type <- as.factor(march$m16s_part_type)
+march$participant_type <- factor(march$participant_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+# for this analysis, only keep mothers
+march <- filter(march, participant_type=="biological mother")
+
+table(march$m16s_spec_type)
+march$body_site <- as.factor(march$m16s_spec_type)
+march$body_site <- factor(march$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+
+march$paired_ID <- substr(march$ParticipantID, 1, 9)
+```
+
+# Read in covariates 
+```{r message=FALSE}
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_072823_v3.csv")
+master_dt[5500:5505, c("ParticipantID.x", "ParticipantID.y")]
+```
+
+   
+# FEAST
+## Prepare ASV table for FEAST
+```{r message=FALSE}
+asv_table <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/12902_asv_table_classic.tsv")
+  # this is newer asv table Justine created in May 2023
+
+#asv_table$type 
+#asv_table$data[1:10, 1:10]
+asv_table <- as.data.frame(t(asv_table)) 
+  # rows are samples, columns are taxa
+colnames(asv_table) <- asv_table[1, ]
+  # assign colnames as ASV id
+asv_table <- asv_table[-(1:2), ] # remove unnecessary rows
+
+# only keep paired maternal samples
+asv_table_paired <- asv_table %>% filter(row.names(asv_table) %in% as.list(march$sample.id))
+row_names <- row.names(asv_table_paired)
+
+str(asv_table_paired[1:5, 1:5]) # counts are not integer now
+asv_table_paired <- as.data.frame(lapply(asv_table_paired, as.integer)) 
+  # transform counts to integer, which is required by FEAST
+
+row.names(asv_table_paired) <- row_names
+
+asv_table_paired <- asv_table_paired[order(row.names(asv_table_paired)), ]
+asv_table_paired <- as.matrix(asv_table_paired)
+  # this will be the input ASV table for FEAST
+```
+
+## Prepare input meta table for FEAST
+```{r message=FALSE, warning=FALSE}
+meta_dt <- march[, c("sample.id", "paired_ID", "body_site", "participant_type")]
+meta_dt <- meta_dt[order(meta_dt$sample.id), ] 
+
+meta_dt$SourceSink <- ifelse(meta_dt$body_site=="vaginal", "Sink", "Source")
+  # maternal vaginal microbiota = sink, maternal fecal microbiota = source
+
+# per requirement of FEAST, each pair should have same id
+meta_dt$id <- 1
+n <- 1
+for(i in 2:nrow(meta_dt)){
+  if(meta_dt$SourceSink[i]=="Source"){
+    meta_dt$id[i] <- n+1
+    n <- n+1
+  }else{
+    meta_dt$id[i] <- meta_dt$id[i-1]
+  }
+}
+
+meta_dt$Env <- paste(meta_dt$body_site, meta_dt$id)
+
+row.names(meta_dt) <- meta_dt$sample.id
+meta_dt <- meta_dt[, c("sample.id", "Env", "SourceSink", "id")]
+meta_dt$id <- as.integer(meta_dt$id) # integer is required by FEAST
+meta_dt <- meta_dt[order(meta_dt$sample.id), ]
+meta_dt <- as.data.frame(meta_dt)
+meta_dt <- meta_dt[, c("Env", "SourceSink", "id")]
+  # this will be the input metadata for FEAST
+
+# check if rownames match (required by FEAST)
+common.sample.ids <- intersect(rownames(meta_dt), rownames(asv_table_paired))
+length(common.sample.ids) # 108
+```
+
+
+## Run FEAST
+```{r eval=FALSE, warning=FALSE, include=FALSE}
+set.seed(91423)
+
+FEAST_output <- FEAST(C = asv_table_paired, metadata = meta_dt, different_sources_flag = 1, 
+                      dir_path="Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",   
+                      outfile="feast_12902_091423_overlap")
+  # default: 1000 EM iteration; 
+  # rarefied at minimal sequencing depth within each group of sink and corresponding source
+```
+
+
+## Modify FEAST output for visulization
+```{r message=FALSE}
+output <- read.table("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results/feast_12902_091423_overlap_source_contributions_matrix.txt")
+
+# select columns containing results when mother stool is the source
+output_stool <- output %>% select(contains("stool"))
+
+
+# generate a new output 
+output_full <- as.data.frame(row.names(output))
+output_full$stool <- rowSums(output_stool, na.rm = TRUE) * ifelse(rowSums(is.na(output_stool)) == ncol(output_stool), NA, 1) * 100
+output_full$unknown <- output$Unknown * 100
+  # multiply all estimated contributions by 100 to get the proportion (%)
+
+colnames(output_full)[1] <- "sample.id"
+output_full$sample.id <- substr(output_full$sample.id, 1,30)
+output_full$ParticipantID <- substr(output_full$sample.id, 7, 17)
+
+
+# add covariates
+output_full <- merge(output_full, master_dt[, -c(1)], by.x="ParticipantID", by.y="ParticipantID.y", all=FALSE)
+
+# add age
+output_full <- merge(output_full, march[, c("sample.id", "m16s_age_yr", "m16s_coll_tmst")], by="sample.id")
+
+
+# re-label some variables
+output_full$birth_delivm <- as.factor(output_full$birth_delivm)
+output_full$birth_delivm <- factor(output_full$birth_delivm, levels=c("1","2"), labels=c("Vaginal delivery", "Cesarean delivery"))
+table(output_full$birth_delivm)
+
+output_full$med_antib_pn <- as.factor(output_full$med_antib_pn)
+output_full$med_antib_pn <- factor(output_full$med_antib_pn, levels=c("0", "1"), labels=c("No antibiotics", "Took antibiotics"))
+table(output_full$med_antib_pn)
+
+table(output_full$birth_delivm, output_full$med_antib_pn)
+
+# exclude one mother with missing delivery mode
+output_full <- filter(output_full, !is.na(output_full$birth_delivm)) # now 53 mothers left
+
+
+# create a long dataset for plotting
+output_full <- gather(output_full, type, prop, stool:unknown, factor_key=TRUE)
+output_full$type <- factor(output_full$type, levels=c("unknown", "stool"),
+                                labels=c("Other", "Fecal"))
+
+```
+
+## Visualize
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5}
+# overall
+p1 <- output_full %>% 
+  group_by(type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=1, label=round(sum, 1))) +
+  geom_bar(stat="identity") + 
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab("Overall\n(n=53)") + labs(fill="Source") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.text = element_text(size=13), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank())   +
+  scale_fill_manual(values=color1_2) 
+
+# by trimester of vaginal samples
+p2 <- output_full %>%
+  group_by(m16s_coll_tmst, type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")), label=round(sum, 1))) + 
+  geom_bar(stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab(" ") + labs(fill="Source") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15),legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1_2)
+
+p <-
+  ggarrange(p1+theme(legend.text = element_text(size=15), legend.title = element_text(size=15), legend.direction = "horizontal"), 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p
+```
+
+### Only show fecal contribution
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5}
+p1 <- 
+  output_full[output_full$type=="Fecal", ] %>%
+  ggplot(aes(y=prop, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Contribution of Fecal Microbiota (%)")  + xlab("Overall\n(n=53)") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+
+
+# by trimester of vaginal samples
+p2 <- output_full[output_full$type=="Fecal", ] %>%
+  ggplot(aes(y=prop, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Contribution of Fecal Microbiota (%)")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+
+p_feast <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_feast
+```
+
+# ASV overlapping
+```{r echo=FALSE}
+march[march$m16s_spec_type==7, ] %>%
+  ggplot(aes(y=m16s_s138_obs_otus_1k, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Unique ASVs after Rarefaction")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+
+```
+
+
+```{r echo=FALSE, message=FALSE}
+asv_table_paired <- as.data.frame(asv_table_paired)
+
+march <- filter(march, ParticipantID %in% as.list(output_full$ParticipantID))
+  # exclude 1 mother with missing delivery mode
+
+# Determine the sharing of ASVs between maternal vaginal and fecal samples 
+# Split into 2 ASV tables
+vagina_id <- filter(march, body_site=="vaginal")
+asv_vagina <- asv_table_paired %>% filter(row.names(asv_table_paired) %in% as.list(vagina_id$sample.id))
+asv_vagina <- asv_vagina[order(row.names(asv_vagina)), ]
+
+stool_id <- filter(march, body_site=="stool")
+asv_stool <- asv_table_paired %>% filter(row.names(asv_table_paired) %in% as.list(stool_id$sample.id))
+asv_stool <- asv_stool[order(row.names(asv_stool)), ]
+
+# Determine sharing (changed on 9/5/2023)
+share_res <- asv_vagina
+
+for(i in 1:ncol(share_res)){
+  share_res[, i] <- ifelse((asv_vagina[,i]>0) & (asv_stool[,i]>0), 3, # shared between maternal vagina and stool
+                           ifelse((asv_vagina[,i]>0) & (asv_stool[,i]==0), 1, # existed in maternal vagina only
+                                  ifelse((asv_vagina[,i]==0) & (asv_stool[,i]>0), 2, # existed in maternal fecal only 
+                                         4)))  # not existed
+}
+
+share_sum <- as.data.frame(vagina_id[, c("sample.id", "ParticipantID")])
+share_sum <- share_sum[order(share_sum$ParticipantID), ]
+
+share_sum <- share_sum %>%
+  mutate(
+    # count how many taxa are shared 
+    both = rowSums(share_res==3), 
+    vagina = rowSums(share_res==1),
+    stool = rowSums(share_res==2)
+  ) 
+
+
+# Determine sharing after taking into account sequencing depth based on relative abundance
+# presence = when relative abundance >= 0.05%
+asv_vagina_rlt <- asv_vagina / rowSums(asv_vagina) * 100
+asv_stool_rlt <- asv_stool / rowSums(asv_stool) * 100
+
+share_res_rlt <- asv_vagina
+for(i in 1:ncol(share_res_rlt)){
+  share_res_rlt[, i] <- ifelse((asv_vagina_rlt[,i]>=0.05) & (asv_stool_rlt[,i]>=0.05), 3, # shared between maternal vagina and stool
+                           ifelse((asv_vagina_rlt[,i]>=0.05) & (asv_stool_rlt[,i]<0.05), 1, # existed in maternal vagina only
+                                  ifelse((asv_vagina_rlt[,i]<0.05) & (asv_stool_rlt[,i]>=0.05), 2, # existed in maternal fecal only 
+                                         4)))  # not existed
+}
+
+share_sum_rlt <- as.data.frame(vagina_id[, c("sample.id", "ParticipantID")])
+share_sum_rlt <- share_sum_rlt[order(share_sum_rlt$ParticipantID), ]
+
+share_sum_rlt <- share_sum_rlt %>%
+  mutate(
+    # count how many taxa are shared 
+    both = rowSums(share_res_rlt==3), 
+    vagina = rowSums(share_res_rlt==1),
+    stool = rowSums(share_res_rlt==2)
+  ) 
+
+
+# Determine sharing after taking into account sequencing depth 
+# presence = when count >= 1count/1000sequences
+sequence_vagina <- filter(march, body_site=="vaginal")
+sequence_vagina <- select(sequence_vagina, c("sample.id", "m16s_slv138_97_depth"))
+sequence_vagina <- sequence_vagina[order(sequence_vagina$'sample.id'),]
+
+sequence_stool <- filter(march, body_site=="stool")
+sequence_stool <- select(sequence_stool, c("sample.id", "m16s_slv138_97_depth"))
+sequence_stool <- sequence_stool[order(sequence_stool$'sample.id'),]
+
+
+share_res_sd <- asv_vagina
+for(i in 1:ncol(share_res_sd)){
+  share_res_sd[, i] <- ifelse((asv_vagina[,i]/sequence_vagina[,2]>=0.001) & (asv_stool[,i]/sequence_stool[,2]>=0.001), 3, 
+                              # shared between maternal vagina and stool
+                           ifelse((asv_vagina[,i]/sequence_vagina[,2]>=0.001) & (asv_stool[,i]/sequence_stool[,2]<0.001), 1, 
+                                  # existed in maternal vagina only
+                                  ifelse((asv_vagina[,i]/sequence_vagina[,2]<0.001) & (asv_stool[,i]/sequence_stool[,2]>=0.001), 2, 
+                                         # existed in maternal fecal only 
+                                         4)))  # not existed
+}
+share_sum_sd <- as.data.frame(vagina_id[, c("sample.id", "ParticipantID")])
+share_sum_sd <- share_sum_sd[order(share_sum_sd$ParticipantID), ]
+
+share_sum_sd <- share_sum_sd %>%
+  mutate(
+    # count how many taxa are shared 
+    both = rowSums(share_res_sd==3), 
+    vagina = rowSums(share_res_sd==1),
+    stool = rowSums(share_res_sd==2)
+  ) 
+
+
+
+# Add covariates
+share_sum <- merge(share_sum, master_dt[, -c(1)], by.x="ParticipantID", by.y="ParticipantID.y", all=FALSE)
+share_sum_rlt <- merge(share_sum_rlt, master_dt[, -c(1)], by.x="ParticipantID", by.y="ParticipantID.y", all=FALSE )
+share_sum_sd <- merge(share_sum_sd, master_dt[, -c(1)], by.x="ParticipantID", by.y="ParticipantID.y", all=FALSE )
+
+share_sum$prop_v_f <- share_sum$both / (share_sum$vagina + share_sum$both) *100
+share_sum_rlt$prop_v_f <- share_sum_rlt$both / (share_sum_rlt$vagina + share_sum_rlt$both) * 100
+share_sum_sd$prop_v_f <- share_sum_sd$both / (share_sum_sd$vagina + share_sum_sd$both) * 100
+
+# add age
+junk <- filter(march, body_site=="vaginal")
+share_sum <- merge(share_sum, junk[, c("ParticipantID", "m16s_coll_tmst")], by="ParticipantID")
+share_sum_rlt <- merge(share_sum_rlt, junk[, c("ParticipantID", "m16s_coll_tmst")], by="ParticipantID")
+share_sum_sd <- merge(share_sum_sd, junk[, c("ParticipantID", "m16s_coll_tmst")], by="ParticipantID")
+
+
+# convert data from wide to long 
+share_sum_2 <- gather(share_sum, type, n_count, both:stool, factor_key=TRUE)
+share_sum_2$type <- factor(share_sum_2$type, 
+                                  levels=c("vagina", "stool", "both"),
+                                  labels=c("Vaginal only", "Fecal only", "Both"))
+
+```
+
+## Visualize: proportion of vaginal microbiota that are in common with fecal microbiota
+### Present when count >=1
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5, message=FALSE, warning=FALSE}
+p1 <- 
+  share_sum %>%
+  ggplot(aes(y=prop_v_f, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Proportion of ASVs in Common with Fecal Microbiota (%)")  + xlab("Overall\n(n=53)") + ggtitle(" ") + ylim(0, 60) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+
+# by trimester of vaginal samples
+p2 <- 
+  share_sum %>%
+  ggplot(aes(y=prop_v_f, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Proportion of ASVs in Common with Fecal Microbiota (%)")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") + ylim(0, 60) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+p_prop <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_prop
+
+share_sum %>%
+  group_by(m16s_coll_tmst) %>%
+  summarise(mean=mean(prop_v_f))
+```
+
+### Present when relative abundance >= 0.05%
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5, message=FALSE, warning=FALSE}
+p1 <- 
+  share_sum_rlt %>%
+  ggplot(aes(y=prop_v_f, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Proportion of ASVs in Common with Fecal Microbiota (%)")  + xlab("Overall\n(n=53)") + ggtitle(" ") + ylim(0, 60) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+
+# by trimester of vaginal samples
+p2 <- 
+  share_sum_rlt %>%
+  ggplot(aes(y=prop_v_f, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Proportion of ASVs in Common with Fecal Microbiota (%)")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") + ylim(0, 60) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+p_prop <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_prop
+
+share_sum_rlt %>%
+  group_by(m16s_coll_tmst) %>%
+  summarise(mean=mean(prop_v_f))
+```
+
+### Present when count >= 1 count/ 1000 sequences
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5, message=FALSE, warning=FALSE}
+p1 <- 
+  share_sum_sd %>%
+  ggplot(aes(y=prop_v_f, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Proportion of ASVs in Common with Fecal Microbiota (%)")  + xlab("Overall\n(n=53)") + ggtitle(" ") + ylim(0, 60) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+
+# by trimester of vaginal samples
+p2 <- 
+  share_sum_sd %>%
+  ggplot(aes(y=prop_v_f, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Proportion of ASVs in Common with Fecal Microbiota (%)")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") + ylim(0, 60) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+p_prop <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_prop
+
+share_sum_sd %>%
+  group_by(m16s_coll_tmst) %>%
+  summarise(mean=mean(prop_v_f))
+```
+
+
+## Visualize: absolute number of ASVs of vaginal microbiota that are in common with fecal microbiota
+### Present when count >=1
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5, message=FALSE, warning=FALSE}
+p1 <- 
+  share_sum %>%
+  ggplot(aes(y=both, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Number of ASVs in Common with Fecal Microbiota")  + xlab("Overall\n(n=53)") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+# by trimester of vaginal samples
+p2 <- 
+  share_sum %>%
+  ggplot(aes(y=both, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Number of ASVs in Common with Fecal Microbiota")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+p_n <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_n
+
+share_sum %>%
+  group_by(m16s_coll_tmst) %>%
+  summarise(mean=mean(both))
+```
+
+### Present when relative abundance >= 0.05%
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5, message=FALSE, warning=FALSE}
+p1 <- 
+  share_sum_rlt %>%
+  ggplot(aes(y=both, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Number of ASVs in Common with Fecal Microbiota")  + xlab("Overall\n(n=53)") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+# by trimester of vaginal samples
+p2 <- 
+  share_sum_rlt %>%
+  ggplot(aes(y=both, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Number of ASVs in Common with Fecal Microbiota")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+p_n <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_n
+
+share_sum_rlt %>%
+  group_by(m16s_coll_tmst) %>%
+  summarise(mean=mean(both))
+```
+
+### Present when count >= 1 count/ 1000 sequences
+```{r echo=FALSE, fig.height=6.5, fig.width=5.5, message=FALSE, warning=FALSE}
+p1 <- 
+  share_sum_sd %>%
+  ggplot(aes(y=both, x=1)) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Number of ASVs in Common with Fecal Microbiota")  + xlab("Overall\n(n=53)") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+# by trimester of vaginal samples
+p2 <- 
+  share_sum_sd %>%
+  ggplot(aes(y=both, x=factor(m16s_coll_tmst, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, outlier.shape=NA) + geom_point(size=3, position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Number of ASVs in Common with Fecal Microbiota")  + xlab(" ") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13),  axis.ticks.x = element_blank(), axis.text.x = element_text(size=15, face="bold"),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=15, face="bold"),
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  stat_summary(fun.y="mean", shape=16, size=1, color="red")
+
+p_n <-
+  ggarrange(p1, 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.2, 0.4), common.legend = TRUE, legend = "bottom")
+p_n
+
+share_sum_sd %>%
+  group_by(m16s_coll_tmst) %>%
+  summarise(mean=mean(both))
+```
+
+
+
+
+## Visualize by venn diagram
+```{r echo=FALSE, fig.width=6, fig.height=6}
+fecal_unique_avg = mean(share_sum$stool)
+fecal_unique_avg
+vaginal_unique_avg = mean(share_sum$vagina)
+vaginal_unique_avg
+common_avg = mean(share_sum$both)
+common_avg
+
+total_samples <- fecal_unique_avg + vaginal_unique_avg + common_avg
+fecal_set <- 1:fecal_unique_avg
+vaginal_set <- (fecal_unique_avg + 1):(fecal_unique_avg + vaginal_unique_avg)
+common_set <- (fecal_unique_avg + vaginal_unique_avg + 1):total_samples
+
+set_list <- list(
+  Fecal = c(fecal_set, common_set),
+  Vaginal = c(vaginal_set, common_set)
+)
+
+library(ggVennDiagram)
+
+ggVennDiagram(set_list) 
+
+```
+
+

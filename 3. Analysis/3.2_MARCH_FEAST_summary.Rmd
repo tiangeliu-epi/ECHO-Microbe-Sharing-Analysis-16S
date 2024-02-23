@@ -1,0 +1,830 @@
+---
+title: "Summarize and Visualize FEAST results in MARCH"
+author: "Tiange Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+knit: (function(input, ...) {
+    rmarkdown::render(
+      input,
+      output_dir = "Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/Results",  
+    )
+  })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r include=FALSE}
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+source("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/ANALYSIS/Codes/OIF_Function.r")
+```
+
+# Import FEAST results and modify
+```{r}
+march <- read.csv(paste0(path,"Results/feast_12902_091123_54dyads.csv")) # Note: this is based on 54 dyads
+  # exclude 1 infant with missing delivery mode 
+march <- filter(march, !is.na(birth_delivm))
+  # maternal vaginal + fecal + infant fecal microbiota;
+  # note this is a long dataset
+vdaart <- read.csv(paste0(path,"Results/feast_12301_091123.csv"))
+  # maternal fecal + infant fecal microbiota
+wisc <- read.csv(paste0(path,"Results/feast_11305_091123.csv"))
+  # maternal vaginal + infant fecal microbiota
+```
+
+## Restrict to around 3 months
+```{r}
+table(march[march$type=="Stool",]$m16s_age_yr)
+
+table(vdaart[vdaart$m16s_age_yr<=0.5,]$m16s_age_yr)
+vdaart <- vdaart %>% filter(m16s_age_yr==0.25 | m16s_age_yr==0.33)
+  # 47 obs
+
+table(wisc[wisc$m16s_age_yr<=0.5,]$m16s_age_yr)
+wisc <- wisc %>% filter(m16s_age_yr==0.17)
+
+```
+
+## Convert VDAART and WISC data from wide to long, and relabel some variables
+```{r}
+vdaart <- gather(vdaart, type, prop, contribution:other, factor_key=TRUE)
+vdaart$type <- factor(vdaart$type, levels=c("other", "contribution"), labels=c("Other", "Maternal fecal"))
+
+wisc <- gather(wisc, type, prop, contribution:other, factor_key = TRUE)
+wisc$type <- factor(wisc$type, levels=c("other", "contribution"), labels=c("Other", "Maternal vaginal"))
+
+march$type <- factor(march$type, levels=c("Other", "Vagina", "Stool"), labels=c("Other", "Maternal vaginal", "Maternal fecal"))
+```
+
+# MARCH
+```{r message=FALSE}
+# Add breastfeeding variables measured at the time of sample collection
+bf_dt <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/submitted_participants_0556a.tsv")
+
+
+table(bf_dt$child_breastfed, bf_dt$infant_diet)
+# breastfed: 1=yes, 2=no
+# diet:1, Breastmilk| 2, Infant formula | 3, Mixed breastmilk and formula |4, Breastmilk and solids| 5, Formula and solids| 6, Breastmilk, formula and solids|7, Other| -7,Declined | -8,Don’t know | -9,Missing 
+
+bf_dt <- bf_dt %>%
+  select('sample-id', child_breastfed, infant_diet)
+march <- merge(march, bf_dt, by.x=c("sample.id"), by.y="sample-id")
+table(march[march$type=="Other",]$child_breastfed, march[march$type=="Other",]$infant_diet)
+
+# generate a new variable indicating feeding type
+march$feeding <- ifelse(march$infant_diet==1, 1, ifelse(march$infant_diet==2 & march$child_breastfed==2, 2, 3))
+table(march[march$type=="Other",]$feeding)  #34, 6, 13
+march$feeding <- as.factor(march$feeding)
+march$feeding <- factor(march$feeding, levels=c("1", "2", "3"), labels=c("Exclusive breastmilk", "Exclusive formula", "Mixed"))
+
+# generate another variable indicating ever/never breastfed
+march$bf <- ifelse(march$feeding=="Exclusive formula", 2, 1)
+march$bf <- factor(march$bf, levels=c("1", "2"), labels=c("Yes", "No"))
+table(march[march$type=="Other",]$bf)
+```
+
+## When we do not stratify by trimester
+### Paired Wilcoxon tests to compare relative contribution, overall and within each group
+```{r}
+wilcoxon_march <- fun_wilcoxon_paired_MARCH(march)
+wilcoxon_march
+```
+
+### Visualize
+```{r fig.height=5, fig.width=7.5, message=FALSE}
+# overall
+p1 <- march %>% 
+  group_by(type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=1, label=round(sum, 1))) +
+  geom_bar(stat="identity") + 
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab("Overall\n(n=53)") + labs(fill="Source") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.text = element_text(size=13), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1) +
+  geom_text(x=0.75, y=97, label="a**", color="white", size=5) + geom_text(x=0.79, y=50, label="b***", color="white", size=5)
+
+# by antibiotics
+p2 <- march %>%
+  group_by(med_antib_pn, type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=factor(med_antib_pn, levels=c("No antibiotics", "Took antibiotics"), labels=c("No\n(n=28)", "Yes\n(n=25)")), label=round(sum, 1))) + 
+  geom_bar(stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab(" ") + labs(fill="Source") + ggtitle("Prenatal Antibiotics") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15),legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1) +
+  geom_text(x=0.75, y=97, label="a**", color="white", size=5) + geom_text(x=0.77, y=53, label="b***", color="white", size=5) +
+  geom_text(x=1.7, y=97, label="a", color="white", size=5) + geom_text(x=1.76, y=47, label="b**", color="white", size=5)
+
+
+# by delivery mode
+p3 <- march %>%
+  group_by(birth_delivm, type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=factor(birth_delivm, levels=c("Vaginal delivery", "Cesarean delivery"), labels=c("Vaginal\n(n=43)", "C-section\n(n=10)")), label=round(sum, 1))) + 
+  geom_bar( stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab(" ") + labs(fill="Source") + ggtitle("Delivery Mode") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+       legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1) +
+  geom_text(x=0.72, y=97, label="a*", color="white", size=5) + geom_text(x=0.78, y=51, label="b***", color="white", size=5) +
+  geom_text(x=1.7, y=97, label="a", color="white", size=5) + geom_text(x=1.7, y=47, label="b", color="white", size=5)
+
+
+# by breastfeeding
+p4 <- march %>%
+  group_by(feeding, type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=factor(feeding, levels=c("Exclusive breastmilk", "Exclusive formula", "Mixed"), labels=c("EBM\n(n=34)", "EF\n(n=6)", "Mixed\n(n=13)")), label=round(sum, 1))) + 
+  geom_bar( stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab(" ") + labs(fill="Source") + ggtitle("Feeding Type") + 
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1) +
+  geom_text(x=0.75, y=97, label="a*", color="white", size=5) + geom_text(x=0.77, y=50, label="b***", color="white", size=5) +
+  geom_text(x=1.7, y=97, label="a", color="white", size=5) + geom_text(x=1.7, y=42, label="b", color="white", size=5) +
+  geom_text(x=2.7, y=97, label="a", color="white", size=5) + geom_text(x=2.76, y=55, label="b**", color="white", size=5)
+```
+
+
+### Save MARCH FEAST figure
+```{r fig.height=6.5, fig.width=8.5}
+fig_march <-
+  ggarrange(p1+theme(legend.text = element_text(size=15), legend.title = element_text(size=15), legend.direction = "horizontal"), 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          p3+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          p4+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          nrow=1, widths=c(0.21, 0.27, 0.27, 0.38), common.legend = TRUE, legend = "bottom")
+fig_march
+```
+```{r eval=FALSE, include=FALSE}
+ggsave(plot = fig_march,
+       filename = "MARCH_FEAST_53dyads_091423.png",
+       path =  paste0(path, "Figures"),
+       height = 6.5, width = 8.5, units = "in", dpi = 300)
+
+```
+
+###  Compare the sharing with each source
+#### Does antibiotics impact contribution of each source?
+```{r}
+junk <- filter(march, type=="Other")
+test1 <- wilcox.test(junk[junk$med_antib_pn=="Took antibiotics", ]$prop, junk[junk$med_antib_pn=="No antibiotics", ]$prop, paired=FALSE)
+test1$p.value <- sprintf("%.3f", test1$p.value)
+test1$p.value
+
+
+  ## decide if we transform the contribution
+model <- lm(prop ~ med_antib_pn  + anthr_bmi_pp, data=junk)
+summary(model)
+plot(model)
+
+model <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp, data=junk)
+summary(model)
+plot(model)  
+  # normality of residues gets much improved after log transformation
+
+  ## decide covariates we want to adjust
+model_0 <- lm(log(prop+1) ~ med_antib_pn, data=junk[!is.na(junk$anthr_bmi_pp),])
+model_1 <- lm(log(prop+1) ~ med_antib_pn + birth_delivm , data=junk[!is.na(junk$anthr_bmi_pp),])
+model_2 <- lm(log(prop+1) ~ med_antib_pn + birth_delivm + anthr_bmi_pp, data=junk) 
+model_3 <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp , data=junk)
+model_4 <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp + feeding, data=junk)
+
+
+AIC(model_0, model_1, model_2, model_3, model_4)
+summary(model_0)
+summary(model_3)
+
+
+
+junk <- filter(march, type=="Maternal vaginal")
+test2 <- wilcox.test(junk[junk$med_antib_pn=="Took antibiotics", ]$prop, junk[junk$med_antib_pn=="No antibiotics", ]$prop, paired=FALSE)
+test2$p.value <- sprintf("%.3f", test2$p.value)
+test2$p.value
+
+
+model_0 <- lm(log(prop+1) ~ med_antib_pn, data=junk[!is.na(junk$anthr_bmi_pp),])
+model_1 <- lm(log(prop+1) ~ med_antib_pn + birth_delivm , data=junk[!is.na(junk$anthr_bmi_pp),])
+model_2 <- lm(log(prop+1) ~ med_antib_pn + birth_delivm + anthr_bmi_pp, data=junk) 
+model_3 <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp , data=junk) # lowest
+model_4 <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp + feeding, data=junk)
+
+ 
+AIC(model_0, model_1, model_2, model_3, model_4)
+summary(model_0)
+summary(model_3)
+
+
+junk <- filter(march, type=="Maternal fecal")
+test3 <- wilcox.test(junk[junk$med_antib_pn=="Took antibiotics", ]$prop, junk[junk$med_antib_pn=="No antibiotics", ]$prop, paired=FALSE)
+test3$p.value <- sprintf("%.3f", test3$p.value)
+test3$p.value
+
+model_0 <- lm(log(prop+1) ~ med_antib_pn, data=junk[!is.na(junk$anthr_bmi_pp),]) # lowest
+model_1 <- lm(log(prop+1) ~ med_antib_pn + birth_delivm , data=junk[!is.na(junk$anthr_bmi_pp),])
+model_2 <- lm(log(prop+1) ~ med_antib_pn + birth_delivm + anthr_bmi_pp, data=junk) 
+model_3 <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp , data=junk) # second lowest
+model_4 <- lm(log(prop+1) ~ med_antib_pn + anthr_bmi_pp + feeding, data=junk)
+
+
+AIC(model_0, model_1, model_2, model_3, model_4)
+summary(model_0)
+summary(model_3)
+
+
+## In summary, prenatal antibiotics does not impact contribution from each source
+```
+
+#### Does delivery mode impact contribution of each source?
+```{r}
+junk <- filter(march, type=="Other")
+test1 <- wilcox.test(junk[junk$birth_delivm=="Vaginal delivery", ]$prop, junk[junk$birth_delivm=="Cesarean delivery", ]$prop, paired=FALSE) #0.8844
+test1$p.value <- sprintf("%.3f", test1$p.value)
+test1$p.value
+  
+  ## decide if we transform the contribution
+model <- lm(prop ~ birth_delivm  + anthr_bmi_pp, data=junk)
+summary(model)
+plot(model)
+
+model <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp, data=junk)
+summary(model)
+plot(model)  
+  # normality of residues gets much improved after log transformation
+
+
+  ## decide covariates we want to adjust
+model_0 <- lm(log(prop+1) ~ birth_delivm, data=junk[!is.na(junk$anthr_bmi_pp),])
+model_1 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp, data=junk)
+model_2 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + par_parity, data=junk) #lowest
+model_3 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + par_parity + demchild_mat_age, data=junk)
+model_4 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + demchild_mat_age, data=junk)
+model_5 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + med_antib_pn, data=junk)
+model_6 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + feeding, data=junk)
+
+AIC(model_0, model_1, model_2, model_3, model_4, model_5, model_6)
+summary(model_0)
+summary(model_2)
+
+
+junk <- filter(march, type=="Maternal vaginal")
+test2 <- wilcox.test(junk[junk$birth_delivm=="Vaginal delivery", ]$prop, junk[junk$birth_delivm=="Cesarean delivery", ]$prop, paired=FALSE) 
+test2$p.value <- sprintf("%.3f", test2$p.value)
+test2$p.value
+
+
+model_0 <- lm(log(prop+1) ~ birth_delivm, data=junk[!is.na(junk$anthr_bmi_pp),])
+model_1 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp, data=junk) # lowest
+model_2 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + par_parity, data=junk) 
+model_3 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + par_parity + demchild_mat_age, data=junk)
+model_4 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + demchild_mat_age, data=junk)
+model_5 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + med_antib_pn, data=junk)
+model_6 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + feeding, data=junk)
+
+AIC(model_0, model_1, model_2, model_3, model_4, model_5, model_6)
+summary(model_0)
+summary(model_1)
+summary(model_2)
+
+
+junk <- filter(march, type=="Maternal fecal")
+test3 <- wilcox.test(junk[junk$birth_delivm=="Vaginal delivery", ]$prop, junk[junk$birth_delivm=="Cesarean delivery", ]$prop, paired=FALSE)
+test3$p.value <- sprintf("%.3f", test3$p.value)
+test3$p.value
+
+
+model_0 <- lm(log(prop+1) ~ birth_delivm, data=junk[!is.na(junk$anthr_bmi_pp),])
+model_1 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp, data=junk)
+model_2 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + par_parity, data=junk) #lowest, very close to model 0, 1
+model_3 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + par_parity + demchild_mat_age, data=junk)
+model_4 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + demchild_mat_age, data=junk)
+model_5 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + med_antib_pn, data=junk)
+model_6 <- lm(log(prop+1) ~ birth_delivm + anthr_bmi_pp + feeding, data=junk)
+
+AIC(model_0, model_1, model_2, model_3, model_4, model_5, model_6)
+summary(model_0)
+summary(model_1)
+summary(model_2)
+
+## In summary, delivery mode does not impact contribution from each source
+```
+   
+#### Does feeding impact the contribution of each source?
+```{r}
+junk <- filter(march, type=="Other")
+test1 <- wilcox.test(junk[junk$feeding=="Exclusive breastmilk", ]$prop, junk[junk$feeding=="Exclusive formula", ]$prop, paired=FALSE) 
+test1$p.value <- sprintf("%.3f", test1$p.value)
+test1$p.value 
+wilcox.test(junk[junk$feeding=="Exclusive breastmilk", ]$prop, junk[junk$feeding=="Mixed", ]$prop, paired=FALSE) 
+  
+  ## decide if we transform the contribution
+model <- lm(prop ~ feeding  + anthr_bmi_pp, data=junk)
+summary(model)
+plot(model)
+
+model <- lm(log(prop+1) ~ feeding + anthr_bmi_pp, data=junk)
+summary(model)
+plot(model)  
+  # normality of residues gets much improved after log transformation
+
+
+  ## decide covariates we want to adjust
+model_0 <- lm(log(prop+1) ~ feeding, data=junk[!is.na(junk$anthr_bmi_pp),]) # lowest
+model_1 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp, data=junk)
+model_2 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + par_parity, data=junk) 
+model_3 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + par_parity + demchild_mat_age, data=junk)
+model_4 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + demchild_mat_age, data=junk)
+model_5 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + med_antib_pn, data=junk)
+model_6 <- lm(log(prop+1) ~ feeding + birth_delivm + anthr_bmi_pp, data=junk)
+
+AIC(model_0, model_1, model_2, model_3, model_4, model_5, model_6)
+summary(model_0)
+summary(model_2)
+
+
+junk <- filter(march, type=="Maternal vaginal")
+test1 <- wilcox.test(junk[junk$feeding=="Exclusive breastmilk", ]$prop, junk[junk$feeding=="Exclusive formula", ]$prop, paired=FALSE) 
+test1$p.value <- sprintf("%.3f", test1$p.value)
+test1$p.value 
+wilcox.test(junk[junk$feeding=="Exclusive breastmilk", ]$prop, junk[junk$feeding=="Mixed", ]$prop, paired=FALSE) 
+
+
+model_0 <- lm(log(prop+1) ~ feeding, data=junk[!is.na(junk$anthr_bmi_pp),]) 
+model_1 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp, data=junk)  # lowest
+model_2 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + par_parity, data=junk) 
+model_3 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + par_parity + demchild_mat_age, data=junk)
+model_4 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + demchild_mat_age, data=junk)
+model_5 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + med_antib_pn, data=junk)
+model_6 <- lm(log(prop+1) ~ feeding + birth_delivm + anthr_bmi_pp, data=junk)
+
+AIC(model_0, model_1, model_2, model_3, model_4, model_5, model_6)
+summary(model_0)
+summary(model_1)
+summary(model_2)
+
+
+junk <- filter(march, type=="Maternal fecal")
+test1 <- wilcox.test(junk[junk$feeding=="Exclusive breastmilk", ]$prop, junk[junk$feeding=="Exclusive formula", ]$prop, paired=FALSE) 
+test1$p.value <- sprintf("%.3f", test1$p.value)
+test1$p.value 
+wilcox.test(junk[junk$feeding=="Exclusive breastmilk", ]$prop, junk[junk$feeding=="Mixed", ]$prop, paired=FALSE) 
+
+
+model_0 <- lm(log(prop+1) ~ feeding, data=junk[!is.na(junk$anthr_bmi_pp),]) 
+model_1 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp, data=junk)  
+model_2 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + par_parity, data=junk)  # lowest
+model_3 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + par_parity + demchild_mat_age, data=junk)
+model_4 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + demchild_mat_age, data=junk)
+model_5 <- lm(log(prop+1) ~ feeding + anthr_bmi_pp + med_antib_pn, data=junk)
+model_6 <- lm(log(prop+1) ~ feeding + birth_delivm + anthr_bmi_pp, data=junk)
+
+AIC(model_0, model_1, model_2, model_3, model_4, model_5, model_6)
+summary(model_0)
+summary(model_1)
+summary(model_2)
+
+## In summary, feeding does not impact contribution from each source
+```
+
+
+####   Visualize 
+``` {r fig.height=6, fig.width=8}
+stat.test <- march %>%
+  group_by(type) %>%
+  wilcox_test(prop ~ med_antib_pn) %>%
+  add_significance()
+stat.test <- stat.test %>% add_xy_position(x = "med_antib_pn")
+
+p1 <-
+  march  %>%
+  ggplot(aes(y=prop, x=factor(med_antib_pn, levels=c("No antibiotics", "Took antibiotics"), labels=c("No\n(n=28)", "Yes\n(n=25)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, aes(color=type)) + geom_point(size=3, aes(color=type), position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Contribution of Source (%)")  + xlab("") + labs(color="Source") + ggtitle("A. Prenatal Antibiotics") + 
+  facet_grid(~factor(type, levels=c("Other", "Maternal vaginal", "Maternal fecal"))) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), axis.ticks.x = element_blank(),
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank(), 
+        strip.background = element_blank(), strip.text = element_blank(),
+        panel.border = element_blank(), 
+        axis.line.x = element_line(colour = "black"), axis.line.y = element_line(colour="black"),
+        plot.title = element_text(size=17, face="bold")) +
+  scale_color_manual(values=color1) + stat_summary(fun.y="mean", aes(color=type), shape=18, size=1.7) +
+  stat_pvalue_manual(stat.test, label = "p", tip.length = 0.01, size=5) +
+  scale_y_continuous(limits=c(0, 120), breaks=c(0, 25, 50, 75, 100))
+p1
+
+
+stat.test <- march %>%
+  group_by(type) %>%
+  wilcox_test(prop ~ birth_delivm) %>%
+  add_significance()
+stat.test <- stat.test %>% add_xy_position(x = "birth_delivm")
+
+p2 <-
+  march  %>%
+  ggplot(aes(y=prop, x=factor(birth_delivm, levels=c("Vaginal delivery", "Cesarean delivery"), labels=c("Vaginal\n(n=43)", "C-section\n(n=10)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, aes(color=type)) + geom_point(size=3, aes(color=type), position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Contribution of Source (%)")  + xlab("") + labs(color="Source", title="B. Delivery Mode") + 
+  facet_grid(~factor(type, levels=c("Other", "Maternal vaginal", "Maternal fecal"))) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), axis.ticks.x = element_blank(),
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank(), 
+        strip.background = element_blank(), strip.text = element_blank(),
+        panel.border = element_blank(), 
+        axis.line.x = element_line(colour = "black"), axis.line.y = element_line(colour="black"),
+        plot.title = element_text(size=17, face="bold")) +
+  scale_color_manual(values=color1) + stat_summary(fun.y="mean", aes(color=type), shape=18, size=1.7) +
+  stat_pvalue_manual(stat.test, label = "p", tip.length = 0.01, size=5) +
+  scale_y_continuous(limits=c(0, 120), breaks=c(0, 25, 50, 75, 100))
+p2
+
+
+stat.test <- march %>%
+  group_by(type) %>%
+  wilcox_test(prop ~ feeding) %>%
+  add_significance()
+stat.test <- stat.test %>% add_xy_position(x = "feeding")
+stat.test$y.position <- ifelse(stat.test$xmax==3 & stat.test$xmin==2, stat.test$y.position-15, 
+                               ifelse(stat.test$xmax==3 & stat.test$xmin==1, stat.test$y.position-10, 
+                                      stat.test$y.position-5))
+p3 <- march  %>%
+  ggplot(aes(y=prop, x=factor(feeding, levels=c("Exclusive breastmilk", "Exclusive formula", "Mixed"), labels=c("EBM\n(n=34)", "EF\n(n=6)", "Mixed\n(n=13)")))) +
+  geom_boxplot(lwd=0.8, width=0.8, aes(color=type)) + geom_point(size=3, aes(color=type), position=position_jitter(w = 0.1, h = 0.1), alpha=0.5) +
+  ylab("Contribution of Source (%)")  + xlab("") + labs(color="Source", title="C. Feeding Type") + 
+  facet_grid(~factor(type, levels=c("Other", "Maternal vaginal", "Maternal fecal"))) +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), axis.ticks.x = element_blank(),
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank(), 
+        strip.background = element_blank(), strip.text = element_blank(),
+        panel.border = element_blank(), 
+        axis.line.x = element_line(colour = "black"), axis.line.y = element_line(colour="black"),
+        plot.title = element_text(size=17, face="bold")) +
+  scale_color_manual(values=color1) + stat_summary(fun.y="mean", aes(color=type), shape=18, size=1.7) +
+  stat_pvalue_manual(stat.test, label = "p", tip.length = 0.01, size=5) +
+  scale_y_continuous(limits=c(0, 120), breaks=c(0, 25, 50, 75, 100))
+
+p3
+```
+
+```{r fig.height=6.5, fig.width=21}
+p <- ggarrange(p1 + ylab("Contribution of Source (%)") + theme(legend.direction = "horizontal"), 
+          p2 + theme(axis.title.y = element_blank()), 
+          p3 + theme(axis.title.y = element_blank()),
+          widths = c(0.9, 0.9, 1.2), nrow=1, common.legend = TRUE, legend="bottom")
+p
+```
+```{r eval=FALSE, include=FALSE}
+ggsave(plot = p,
+       filename = "MARCH_FEAST_53dyads_compare_each_091423.png",
+       path =  paste0(path, "Figures"),
+       height = 6.5, width = 21, units = "in", dpi = 300)
+
+```
+
+
+## Stratify by trimester when the vaginal samples were collected
+```{r}
+# Add trimester variable
+full_dta <- read.delim("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/m16s_der_hpc_0556a.tsv")
+
+full_dta$PregID <- substr(full_dta$ParticipantID, 1, 9)
+full_dta <- filter(full_dta, PregID %in% as.list(march$PregID))
+full_dta <- filter(full_dta, m16s_part_type==1) # keep mothers only
+
+# Summarize trimester when maternal vaginal and fecal samples were collected
+table(full_dta$m16s_spec_type, full_dta$m16s_coll_tmst)
+
+# When did maternal vaginal samples collected for the 2 mothers whose fecal were collected at 2nd trimester?
+full_dta[full_dta$m16s_coll_tmst==2 & full_dta$m16s_spec_type==1,]$PregID
+full_dta[full_dta$PregID=="KFM128-01" & full_dta$m16s_spec_type==7,]$m16s_coll_tmst #2
+full_dta[full_dta$PregID=="LJF586-01" & full_dta$m16s_spec_type==7,]$m16s_coll_tmst #2
+  # vaginal samples were collected also in 2nd trimester
+
+full_dta_1 <- filter(full_dta, m16s_spec_type==7)  # maternal vaginal samples
+full_dta_1 <- select(full_dta_1, c(PregID, m16s_coll_tmst))
+colnames(full_dta_1)[2] <- "tmst_v" 
+
+full_dta_2 <- filter(full_dta, m16s_spec_type==1)  # maternal fecal samples
+full_dta_2 <- select(full_dta_2, c(PregID, m16s_coll_tmst))
+colnames(full_dta_2)[2] <- "tmst_f" 
+
+full_dta <- merge(full_dta_1, full_dta_2, by=c("PregID"))
+
+march <- merge(march, full_dta, by=c("PregID"))
+table(march$tmst_v)
+table(march$tmst_f)
+```
+
+### Visualize
+```{r fig.height=6.5, fig.width=5.5}
+# overall
+p1 <- march %>% 
+  group_by(type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=1, label=round(sum, 1))) +
+  geom_bar(stat="identity") + 
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab("Overall\n(n=53)") + labs(fill="Source") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.text = element_text(size=13), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1) +
+  geom_text(x=0.75, y=97, label="a**", color="white", size=5) + geom_text(x=0.79, y=50, label="b***", color="white", size=5)
+
+# by trimester of vaginal samples
+p2 <- march %>%
+  group_by(tmst_v, type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=factor(tmst_v, levels=c("1", "2", "3"), labels=c("1\n(n=25)", "2\n(n=5)", "3\n(n=23)")), label=round(sum, 1))) + 
+  geom_bar(stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab(" ") + labs(fill="Source") + ggtitle("Trimester of Vaginal Samples") +
+  theme_bw() +
+  theme(axis.text = element_text(size=13), axis.text.x = element_text(size=15, face="bold"), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.title.x=element_blank(), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15),legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1) #+
+  #geom_text(x=0.75, y=97, label="a**", color="white", size=5) + geom_text(x=0.77, y=53, label="b***", color="white", size=5) +
+  #geom_text(x=1.7, y=97, label="a", color="white", size=5) + geom_text(x=1.76, y=47, label="b**", color="white", size=5)
+
+p3 <- march[march$tmst_f==march$tmst_v, ] %>%
+  group_by(type) %>%
+  summarise(sum=mean(prop)) %>%
+  ggplot(aes(fill=type, y=sum, x=1, label=round(sum, 1))) + 
+  geom_bar(stat="identity") +
+  geom_text(size = 5, position = position_stack(vjust = 0.5)) + 
+  ylab("Mean Contribution of Source (%)") + xlab("n=25 ") + labs(fill="Source") + ggtitle(" ") +
+  theme_bw() +
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), 
+        plot.title = element_text(size=15, face="bold", hjust = 0.5), 
+        axis.text = element_text(size=13), axis.title = element_text(size=15, face="bold"),
+        legend.title = element_text(size=15, face="bold"), legend.text = element_text(size=15), legend.direction = "vertical",
+        panel.grid = element_blank()) +
+  scale_fill_manual(values=color1)
+
+p <-
+  ggarrange(p1+theme(legend.text = element_text(size=15), legend.title = element_text(size=15), legend.direction = "horizontal"), 
+          p2+theme(axis.ticks = element_blank(), axis.title.y = element_blank(), axis.text.y = element_blank()), 
+          p3+theme(axis.ticks = element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank()),
+          nrow=1, widths=c(0.21, 0.4, 0.21), common.legend = TRUE, legend = "bottom")
+p
+```
+
+### Restrict to 3rd trimester only
+```{r fig.height=8, fig.width=20, message=FALSE}
+march$type <- factor(march$type, levels=c("Other", "Maternal fecal", "Maternal vaginal"), 
+                     labels=c("Other", "Maternal fecal microbiota", "Maternal vaginal microbiota"))
+
+# overall
+p_overall <- march[march$tmst_v==3,] %>%
+  group_by(type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = 2, y = mean, fill = type)) +
+    geom_col(color="black", lwd=1) +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    geom_text(aes(x=0.5, y=0, label=paste0("Infant\nFecal Microbiota")), size=6) +
+    theme_void() + theme(legend.position = "none")
+
+
+# prenatal antibiotics
+march$med_antib_pn <- factor(march$med_antib_pn, levels=c("No antibiotics", "Took antibiotics"), labels=c("No", "Yes"))
+
+p_antib <- march[march$tmst_v==3,] %>%
+  group_by(med_antib_pn, type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = med_antib_pn, y = mean, fill = type)) +
+    geom_col(aes(linetype=med_antib_pn), color="black", lwd=1) + 
+    scale_x_discrete(limits = c(" ","Yes", "No")) +
+    coord_polar(theta = "y") + labs(fill="Source", linetype="Prenatal Antibiotic Use") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    theme_void() + theme(legend.position = "bottom", legend.box="vertical", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) + guides(fill = FALSE)
+
+
+# delivery mode
+march$birth_delivm <- factor(march$birth_delivm, levels = c("Vaginal delivery", "Cesarean delivery"), labels=c("Vaginal", "C-section"))
+
+p_deliv <- march[march$tmst_v==3,] %>%
+  group_by(birth_delivm, type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = birth_delivm, y = mean, fill = type)) +
+    geom_col(aes(linetype=birth_delivm), color="black", lwd=1) + 
+    scale_x_discrete(limits = c(" ","C-section", "Vaginal")) +
+    coord_polar(theta = "y") + labs(fill="Source", linetype="Delivery Mode") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    theme_void() + theme(legend.position = "bottom", legend.box="vertical", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) + guides(fill = FALSE)
+
+# bf
+p_bf <- march[march$tmst_v==3,] %>%
+  group_by(bf, type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = bf, y = mean, fill = type)) +
+    geom_col(aes(linetype=bf), color="black", lwd=1) + 
+    scale_x_discrete(limits = c(" ","No", "Yes")) +
+    coord_polar(theta = "y") + labs(fill="Source", linetype="Ever Breastfed") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    theme_void() + theme(legend.position = "bottom", legend.box="vertical", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) + guides(fill = FALSE)
+
+p <- ggarrange(p_overall, p_antib, p_deliv, p_bf, nrow=1) 
+p
+```
+```{r eval=FALSE, include=FALSE}
+ggsave(p, filename = "MARCH_3rdtms_FEAST_byvariables_100523.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 20, units = "in", dpi = 300)
+```
+
+```{r fig.height=8, fig.width=10, eval=FALSE, include=FALSE}
+p_overall <- march[march$tmst_v==3,] %>%
+  group_by(type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = 2, y = mean, fill = type)) +
+    geom_col(color="black", lwd=1) +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values=color7) + labs(fill="Source") +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    geom_text(aes(x=0.5, y=0, label=paste0("Infant\nFecal Microbiota")), size=6) +
+    theme_void() + theme(legend.position = "bottom", legend.direction = "horizontal", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) +
+    guides(linetype=FALSE)
+
+ p_overall
+
+ggsave(p_overall, filename = "MARCH_3rdtms_FEAST_byvariables_legend_100523.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 10, units = "in", dpi = 300)
+```
+
+#### Test within each group
+```{r}
+wide_dta <- spread(march, type, prop)
+  
+
+wide_dta$sum_not_shared <- wide_dta$Other
+wide_dta$sum_shared <- 100-wide_dta$Other
+wide_dta$stool <- wide_dta$'Maternal fecal microbiota'
+wide_dta$vagina <- wide_dta$'Maternal vaginal microbiota'
+
+wide_dta$birth_delivm <- factor(wide_dta$birth_delivm, levels=c("Vaginal", "C-section"), labels=c("Vaginal delivery", "Cesarean delivery"))
+wide_dta$med_antib_pn <- factor(wide_dta$med_antib_pn, levels=c("No", "Yes"), labels=c("No antibiotics", "Took antibiotics"))
+
+test_dta <- filter(wide_dta, tmst_v==3)
+fun_wilcoxon_paired_MARCH_2(test_dta)
+```
+
+#### Test across groups
+```{r message=FALSE, warning=FALSE, fig.height=6.5, fig.width=20}
+data <- filter(march, tmst_v==3)
+p <- test_FEAST_byvariabels(data)
+p
+```
+```{r eval=FALSE, include=FALSE}
+ggsave(p, filename = "MARCH_3rdtms_FEAST_betweenvariables_100523.png",
+       path =  paste0(path, "Figures"),
+       height = 6.5, width = 20, units = "in", dpi = 300)
+```
+
+
+### Restrict to same trimester
+```{r fig.height=8, fig.width=20, message=FALSE}
+# overall
+p_overall <- march[march$tmst_v==march$tmst_f,] %>%
+  group_by(type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = 2, y = mean, fill = type)) +
+    geom_col(color="black", lwd=1) +
+    coord_polar(theta = "y") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    geom_text(aes(x=0.5, y=0, label=paste0("Infant\nFecal Microbiota")), size=6) +
+    theme_void() + theme(legend.position = "none")
+
+
+# prenatal antibiotics
+p_antib <- march[march$tmst_v==march$tmst_f,] %>%
+  group_by(med_antib_pn, type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = med_antib_pn, y = mean, fill = type)) +
+    geom_col(aes(linetype=med_antib_pn), color="black", lwd=1) + 
+    scale_x_discrete(limits = c(" ","Yes", "No")) +
+    coord_polar(theta = "y") + labs(fill="Source", linetype="Prenatal Antibiotic Use") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    theme_void() + theme(legend.position = "bottom", legend.box="vertical", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) + guides(fill = FALSE)
+
+
+# delivery mode
+p_deliv <- march[march$tmst_v==march$tmst_f,] %>%
+  group_by(birth_delivm, type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = birth_delivm, y = mean, fill = type)) +
+    geom_col(aes(linetype=birth_delivm), color="black", lwd=1) + 
+    scale_x_discrete(limits = c(" ","C-section", "Vaginal")) +
+    coord_polar(theta = "y") + labs(fill="Source", linetype="Delivery Mode") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    theme_void() + theme(legend.position = "bottom", legend.box="vertical", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) + guides(fill = FALSE)
+
+# bf
+p_bf <- march[march$tmst_v==march$tmst_f,] %>%
+  group_by(bf, type) %>%
+  summarise(mean = mean(prop)) %>%
+  ggplot(aes(x = bf, y = mean, fill = type)) +
+    geom_col(aes(linetype=bf), color="black", lwd=1) + 
+    scale_x_discrete(limits = c(" ","No", "Yes")) +
+    coord_polar(theta = "y") + labs(fill="Source", linetype="Ever Breastfed") +
+    scale_fill_manual(values=color7) +
+    geom_text(aes(label = paste0(round(mean, 1), "%")),
+              position = position_stack(vjust = 0.5), size=5) +
+    theme_void() + theme(legend.position = "bottom", legend.box="vertical", legend.margin=margin(), 
+                         legend.title = element_text(face="bold", size=17), legend.text = element_text(size=17)) + guides(fill = FALSE)
+
+p <- ggarrange(p_overall, p_antib, p_deliv, p_bf, nrow=1) 
+p
+```
+```{r eval=FALSE, include=FALSE}
+ggsave(p, filename = "MARCH_sametms_FEAST_byvariables_100523.png",
+       path =  paste0(path, "Figures"),
+       height = 8, width = 20, units = "in", dpi = 300)
+```
+
+#### Test within each group
+```{r}
+test_dta <- filter(wide_dta, tmst_v==tmst_f)
+fun_wilcoxon_paired_MARCH_2(test_dta)
+```
+
+#### Test across groups
+```{r message=FALSE, warning=FALSE, fig.height=6.5, fig.width=20}
+data <- filter(march, tmst_v==tmst_f)
+p <- test_FEAST_byvariabels(data)
+p
+```
+```{r eval=FALSE, include=FALSE}
+ggsave(p, filename = "MARCH_sametms_FEAST_betweenvariables_100523.png",
+       path =  paste0(path, "Figures"),
+       height = 6.5, width = 20, units = "in", dpi = 300)
+```
+
+
+
+
+
+
