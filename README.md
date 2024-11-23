@@ -1,4 +1,4 @@
-![image](https://github.com/user-attachments/assets/a2d85c74-0af6-48d1-92ae-98e1d99bf3fc)# ECHO-Microbe-Sharing-Analysis-16S
+# ECHO-Microbe-Sharing-Analysis-16S
 
 This repository contains the R scripts and RMarkdown files used to analyze mother-child microbe sharing in the ECHO study (manuscript currently under review). 
 
