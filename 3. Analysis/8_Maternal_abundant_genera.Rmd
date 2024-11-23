@@ -1,0 +1,392 @@
+---
+title: "To Plot the Most Abundant Genera in Maternal Microbiota"
+author: "Tiange Liu"
+date: "2024-03-29"
+output: html_document
+---
+
+```{r include=FALSE}
+source("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/ANALYSIS/Codes/OIF_Function.r")
+path <- paste("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/USERS/TiangeLiu/OUTPUT/")
+
+library(phyloseq)
+library(tibble)
+library(ggsci)
+```
+
+```{r}
+# write a function to modify ASV files
+modf_asv <- function(cohort_asv){
+  cohort_asv <- as.data.frame(t(cohort_asv))  # rows are samples, columns are taxa
+  colnames(cohort_asv) <- cohort_asv[1, ] # assign colnames as ASV id
+  cohort_asv <- cohort_asv[-(1:2), ] # remove unnecessary rows
+
+  cohort_asv_name <- fun_asv_name(cohort_asv) # extract asv name and modify
+  cohort_asv_name <- cohort_asv_name %>% column_to_rownames("asv") 
+  cohort_asv_name <- cohort_asv_name %>%
+    mutate(genus = case_when(genus=="genus unknown" & !is.na(family) ~ paste0(family," ", genus),
+                           genus=="genus unknown" & is.na(family) & !is.na(order) ~ paste0(order," ", genus),
+                           genus=="genus unknown" & is.na(family) & is.na(order) & !is.na(class) ~ paste0(class," ", genus),
+                           TRUE ~ genus))
+  cohort_asv_name <- as.matrix(cohort_asv_name)
+
+  cohort_asv <- cohort_asv[-nrow(cohort_asv),]
+  cohort_asv <- as.data.frame(t(cohort_asv)) # rows are asv and columns are samples
+  row_names <- row.names(cohort_asv)
+  col_names <- colnames(cohort_asv)
+  cohort_asv <- as.data.frame(lapply(cohort_asv, as.integer))
+  row.names(cohort_asv) <- row_names
+  colnames(cohort_asv) <- col_names
+  
+  return(list(cohort_asv_name = cohort_asv_name, cohort_asv = cohort_asv))
+}
+
+# write a function to calculate mean relative abundance at genus level
+mean_rlt_abd <- function(phyloseq){
+  rlt_abd_dta <- transform_sample_counts(phyloseq, function(x) 100* x / sum(x)) # transform to relative abundance
+  rlt_abd_dta <- psmelt(rlt_abd_dta) # create dataframe from phyloseq object
+  
+  genus_dta <- rlt_abd_dta %>% # merge to genus level 
+    group_by(Sample, genus) %>%
+    mutate(Abundance = sum(Abundance)) %>%
+    select(genus, Sample, Abundance)
+
+  mean_dta <- genus_dta %>% # calculate mean relative abundance
+    group_by(genus) %>%
+    summarise(mean_rlt_abd = mean(Abundance)) 
+
+  return(mean_dta)
+}
+```
+
+# MARCH
+```{r message=FALSE}
+# ID file
+master_dt <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/OIF_master_SQL_072823_v3.csv")
+
+# re-label some variables
+master_dt$birth_delivm <- as.factor(master_dt$birth_delivm)
+master_dt$birth_delivm <- factor(master_dt$birth_delivm, levels=c("-5", "1","2"), labels=c("Missing", "Vaginal delivery", "Cesarean delivery"))
+
+master_dt$med_antib_pn <- as.factor(master_dt$med_antib_pn)
+master_dt$med_antib_pn <- factor(master_dt$med_antib_pn, levels=c("-8", "0", "1"), labels=c("Missing", "No antibiotics", "Took antibiotics"))
+
+march <- read.csv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/12902/MARCH_paired_54.csv")
+
+march$participant_type <- as.factor(march$m16s_part_type)
+march$participant_type <- factor(march$participant_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+march$body_site <- as.factor(march$m16s_spec_type)
+march$body_site <- factor(march$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+
+march$paired_ID <- substr(march$ParticipantID, 1, 9)
+
+## Exclude infant with missing delivery mode
+march <- merge(march, master_dt[, -c(1)], by.x="paired_ID", by.y="PregID", all=FALSE)
+march <- filter(march, !is.na(birth_delivm))
+
+## Restrict to 3rd trimester maternal samples
+march <- filter(march, paired_ID %in% as.list(march[march$body_site=="vaginal" & march$m16s_coll_tmst==3,]$paired_ID))
+march <- march %>% column_to_rownames("sample.id")
+
+
+# ASV file
+march_asv <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12902/12902_asv_table_classic.tsv")
+
+result <- modf_asv(march_asv)
+march_asv_name <- result$cohort_asv_name
+march_asv <- result$cohort_asv
+
+
+# Create phyloseq by participant and body site
+march_asv <- otu_table(march_asv, taxa_are_rows = TRUE)
+march_asv_name <- tax_table(march_asv_name)
+march <- sample_data(march)
+
+march_phyloseq <- phyloseq(march_asv, march_asv_name, march)
+
+march_child_phyloseq <- subset_samples(march_phyloseq, participant_type=="child")
+march_m_fecal_phyloseq <- subset_samples(march_phyloseq, participant_type=="biological mother" & body_site=="stool")
+march_m_vaginal_phyloseq <- subset_samples(march_phyloseq, participant_type=="biological mother" & body_site=="vaginal")
+```
+
+```{r}
+estimate_richness(march_child_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+
+estimate_richness(march_m_fecal_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+
+estimate_richness(march_m_vaginal_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+```
+
+```{r}
+march_child_rlt_abd <- mean_rlt_abd(march_child_phyloseq)
+march_child_rlt_abd <- march_child_rlt_abd %>%
+  mutate(cohort = "MARCH", type = "Children Fecal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus))
+  
+march_m_fecal_rlt_abd <- mean_rlt_abd(march_m_fecal_phyloseq)
+march_m_fecal_rlt_abd <- march_m_fecal_rlt_abd %>%
+  mutate(cohort = "MARCH", type = "Maternal Fecal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus))
+  
+march_m_vaginal_rlt_abd <- mean_rlt_abd(march_m_vaginal_phyloseq)
+march_m_vaginal_rlt_abd <- march_m_vaginal_rlt_abd %>%
+  mutate(cohort = "MARCH", type = "Maternal Vaginal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus))
+
+march_plot_dt <- rbind(march_child_rlt_abd, march_m_fecal_rlt_abd, march_m_vaginal_rlt_abd)
+```
+
+# Import participant data that will be useful for the other four cohorts
+```{r}
+full_dta <- read.delim("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/01.metadata/m16s_der_hpc_0556a.tsv")
+
+table(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- as.factor(full_dta$m16s_part_type)
+full_dta$m16s_part_type <- factor(full_dta$m16s_part_type, levels=c("1", "2"), labels=c("biological mother", "child"))
+
+table(full_dta$m16s_spec_type)
+full_dta$body_site <- as.factor(full_dta$m16s_spec_type)
+full_dta$body_site <- factor(full_dta$m16s_spec_type, levels=c("1", "7"), labels=c("stool", "vaginal"))
+```
+
+
+# VDAART
+```{r message=FALSE}
+vdaart <- read.csv(paste0(path,"Results/feast_12301_091123.csv"))
+vdaart <- full_dta %>% filter(CohortID==12301 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(vdaart$sample.id, 7, 15)))) 
+row.names(vdaart) <- vdaart$sample.id
+
+# ASV file
+vdaart_asv <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12301/12301_asv_table_classic.tsv")
+
+result <- modf_asv(vdaart_asv)
+vdaart_asv_name <- result$cohort_asv_name
+vdaart_asv <- result$cohort_asv
+
+# Create phyloseq 
+vdaart_asv <- otu_table(vdaart_asv, taxa_are_rows = TRUE)
+vdaart_asv_name <- tax_table(vdaart_asv_name)
+vdaart <- sample_data(vdaart)
+
+vdaart_phyloseq <- phyloseq(vdaart_asv, vdaart_asv_name, vdaart)
+
+vdaart_child_phyloseq <- subset_samples(vdaart_phyloseq, m16s_part_type=="child")
+vdaart_m_fecal_phyloseq <- subset_samples(vdaart_phyloseq, m16s_part_type=="biological mother" & body_site=="stool")
+  # maternal fecal sample
+
+# Calculate mean relative abundance
+vdaart_m_fecal_rlt_abd <- mean_rlt_abd(vdaart_m_fecal_phyloseq)
+vdaart_m_fecal_rlt_abd <- vdaart_m_fecal_rlt_abd %>%
+  mutate(cohort = "VDAART", type = "Maternal Fecal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus)) 
+
+```
+
+```{r}
+estimate_richness(vdaart_child_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+
+estimate_richness(vdaart_m_fecal_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+```
+
+
+# RESONANCE
+```{r message=FALSE}
+resonance <- read.csv(paste0(path,"Results/feast_10703_091123.csv"))
+resonance <- full_dta %>% filter(CohortID==10703 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(resonance$sample.id, 7, 15)))) 
+row.names(resonance) <- resonance$sample.id
+
+# ASV file
+resonance_asv <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/10703/10703_asv_table_classic.tsv")
+
+result <- modf_asv(resonance_asv)
+resonance_asv_name <- result$cohort_asv_name
+resonance_asv <- result$cohort_asv
+
+# Create phyloseq 
+resonance_asv <- otu_table(resonance_asv, taxa_are_rows = TRUE)
+resonance_asv_name <- tax_table(resonance_asv_name)
+resonance <- sample_data(resonance)
+
+resonance_phyloseq <- phyloseq(resonance_asv, resonance_asv_name, resonance)
+
+resonance_child_phyloseq <- subset_samples(resonance_phyloseq, m16s_part_type=="child")
+resonance_m_fecal_phyloseq <- subset_samples(resonance_phyloseq, m16s_part_type=="biological mother" & body_site=="stool")
+  # maternal fecal sample
+
+# Calculate mean relative abundance
+resonance_m_fecal_rlt_abd <- mean_rlt_abd(resonance_m_fecal_phyloseq)
+resonance_m_fecal_rlt_abd <- resonance_m_fecal_rlt_abd %>%
+  mutate(cohort = "RESONANCE", type = "Maternal Fecal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus)) 
+```
+
+```{r}
+estimate_richness(resonance_child_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+
+estimate_richness(resonance_m_fecal_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+```
+
+
+# WISC
+```{r message=FALSE}
+wisc <- read.csv(paste0(path,"Results/feast_11305_091123.csv"))
+wisc <- full_dta %>% filter(CohortID==11305 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(wisc$sample.id, 7, 15)))) 
+row.names(wisc) <- wisc$sample.id
+
+# ASV file
+wisc_asv <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/11305/11305_asv_table_classic.tsv")
+
+result <- modf_asv(wisc_asv)
+wisc_asv_name <- result$cohort_asv_name
+wisc_asv <- result$cohort_asv
+
+# Create phyloseq 
+wisc_asv <- otu_table(wisc_asv, taxa_are_rows = TRUE)
+wisc_asv_name <- tax_table(wisc_asv_name)
+wisc <- sample_data(wisc)
+
+wisc_phyloseq <- phyloseq(wisc_asv, wisc_asv_name, wisc)
+
+wisc_child_phyloseq <- subset_samples(wisc_phyloseq, m16s_part_type=="child")
+wisc_m_vaginal_phyloseq <- subset_samples(wisc_phyloseq, m16s_part_type=="biological mother" & body_site=="vaginal")
+  # maternal vaginal sample
+
+# Calculate mean relative abundance
+wisc_m_vaginal_rlt_abd <- mean_rlt_abd(wisc_m_vaginal_phyloseq)
+wisc_m_vaginal_rlt_abd <- wisc_m_vaginal_rlt_abd %>%
+  mutate(cohort = "WISC", type = "Maternal Vaginal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus)) 
+
+```
+
+```{r}
+estimate_richness(wisc_child_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+
+estimate_richness(wisc_m_vaginal_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+```
+
+# Rochester
+```{r message=FALSE}
+rochester <- read.csv(paste0(path,"Results/feast_12601_091123.csv"))
+rochester <- full_dta %>% filter(CohortID==12601 & 
+                                 (substr(ParticipantID, 1, 9) %in% as.list(substr(rochester$sample.id, 7, 15)))) 
+row.names(rochester) <- rochester$sample.id
+
+# ASV file
+rochester_asv <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20230518/01.CohortMerge/03.cohort_asv_data/12601/12601_asv_table_classic.tsv")
+rochester_asv <- read_tsv("Z:/DAC_AnalysisProjects/10_Analysis_Proposals/EC0556A/DATA/DERIVED/20231127/asvs/12601/12601_asv_table_classic.tsv")
+
+result <- modf_asv(rochester_asv)
+rochester_asv_name <- result$cohort_asv_name
+rochester_asv <- result$cohort_asv
+
+# Create phyloseq 
+rochester_asv <- otu_table(rochester_asv, taxa_are_rows = TRUE)
+rochester_asv_name <- tax_table(rochester_asv_name)
+rochester <- sample_data(rochester)
+
+rochester_phyloseq <- phyloseq(rochester_asv, rochester_asv_name, rochester)
+
+rochester_child_phyloseq <- subset_samples(rochester_phyloseq, m16s_part_type=="child")
+rochester_m_vaginal_phyloseq <- subset_samples(rochester_phyloseq, m16s_part_type=="biological mother" & body_site=="vaginal")
+  # maternal vaginal sample
+
+# Calculate mean relative abundance
+rochester_m_vaginal_rlt_abd <- mean_rlt_abd(rochester_m_vaginal_phyloseq)
+rochester_m_vaginal_rlt_abd <- rochester_m_vaginal_rlt_abd %>%
+  mutate(cohort = "Rochester", type = "Maternal Vaginal", genus = ifelse(mean_rlt_abd < 1, "< 1%", genus)) 
+
+```
+
+
+```{r}
+estimate_richness(rochester_child_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+
+estimate_richness(rochester_m_vaginal_phyloseq, split = TRUE, measures = c("Observed")) %>%
+  summarise(mean = mean(Observed), sd = sd(Observed))
+```
+
+
+```{r fig.width=14.5, fig.height=5}
+plot_dt <- rbind(march_m_fecal_rlt_abd, march_m_vaginal_rlt_abd, resonance_m_fecal_rlt_abd, vdaart_m_fecal_rlt_abd,
+                 wisc_m_vaginal_rlt_abd, rochester_m_vaginal_rlt_abd)
+plot_dt$cohort <- factor(plot_dt$cohort, levels=c("MARCH", "RESONANCE", "VDAART", "Rochester", "WISC"))
+plot_dt$type <- factor(plot_dt$type, levels=c("Maternal Fecal", "Maternal Vaginal"), 
+                       labels=c("Maternal Fecal Microbiota", "Maternal Vaginal Microbiota"))
+
+plot_dt <- plot_dt %>%
+  mutate(genus = str_trim(genus),  # 1) Remove any leading and trailing spaces
+         genus = str_replace_all(genus, "\\[|\\]", ""),  # 2) Remove any labels including "[" or "]"
+         genus = str_replace_all(genus, "_", " "))  # 3) Replace "_" with " "
+
+top_genus <- plot_dt %>%
+  group_by(type) %>%
+  slice_max(order_by = mean_rlt_abd, n = 25, with_ties = FALSE) %>%
+  ungroup()
+
+length(unique(top_genus[top_genus$type=="Maternal Fecal Microbiota",]$genus))
+
+
+p1 <- plot_dt %>%
+  filter(type=="Maternal Fecal Microbiota") %>%
+  mutate(genus = ifelse(genus %in% top_genus[top_genus$type=="Maternal Fecal Microbiota",]$genus, genus, "Other")) %>%
+  group_by(type, cohort, genus) %>%
+  summarise(mean_rlt_abd = sum(mean_rlt_abd), .groups = 'drop') %>%
+  ggplot(aes(x=1, y=mean_rlt_abd, fill=reorder(genus, mean_rlt_abd, decreasing = TRUE)) )+
+    geom_bar(stat="identity", position = "stack", color=NA) +
+    facet_grid(rows = vars(type), cols=vars(cohort), scales = "free", space = "free_x") +
+    labs(y = "Mean relative abundance (%)", fill="Genera") + 
+    theme_bw() + 
+    scale_fill_simpsons() +
+    theme(legend.position="right", axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+          axis.title.x = element_blank(), axis.title.y = element_text(size=12), 
+          axis.text = element_text(size=10), strip.text = element_text(size=12),
+          legend.text = element_text(size=12, face="italic"), legend.title = element_text(size=12),
+          panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+          strip.background = element_rect(fill="white")) 
+
+top_genus <- plot_dt %>%
+  group_by(type) %>%
+  slice_max(order_by = mean_rlt_abd, n = 15, with_ties = FALSE) %>%
+  ungroup()
+length(unique(top_genus[top_genus$type=="Maternal Vaginal Microbiota",]$genus))
+
+
+p2 <- plot_dt %>%
+  filter(type=="Maternal Vaginal Microbiota") %>%
+  mutate(genus = ifelse(genus %in% top_genus[top_genus$type=="Maternal Vaginal Microbiota",]$genus, genus, "Other")) %>%
+  mutate(genus = ifelse(genus == "Insecta genus unknown", "Other", genus)) %>%
+  group_by(type, cohort, genus) %>%
+  summarise(mean_rlt_abd = sum(mean_rlt_abd), .groups = 'drop') %>%
+  ggplot(aes(x=1, y=mean_rlt_abd, fill=reorder(genus, mean_rlt_abd, decreasing = TRUE)) )+
+    geom_bar(stat="identity", position = "stack", color=NA) +
+    facet_grid(rows = vars(type), cols=vars(cohort), scales = "free", space = "free_x") +
+    labs(y = "Mean relative abundance (%)", fill="Genera") + 
+    theme_bw() + 
+    scale_fill_manual(values = c("#e6194b", "#3cb44b", "#ffe119", "#0082c8", "#f58231", 
+                                 "#911eb4", "#46f0f0", "#f032e6", "#d2f53c", "#fabebe", "#008080"))   +      
+    theme(legend.position="right", axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+          axis.title.x = element_blank(), axis.title.y = element_text(size=12), 
+          axis.text = element_text(size=10), strip.text = element_text(size=12),
+          legend.text = element_text(size=12, face="italic"), legend.title = element_text(size=12),
+          panel.grid.minor = element_blank(), panel.grid.major = element_blank(),
+          strip.background = element_rect(fill="white")) 
+```
+
+```{r fig.width=14.5, fig.height=5}
+p <- ggarrange(p1, NULL, p2, nrow=1, widths = c(1, 0.03, 0.87), labels = c("A", "", "B"), font.label = list(size=15))
+p
+  
+ggsave(p, filename = "Maternal_Abundant_Genera_033124_v2.png",
+       path =  paste0(path, "Figures"),
+       height = 5, width = 14.5, units = "in", dpi = 500)
+
+```
