@@ -8,7 +8,7 @@ This repository contains the R scripts and RMarkdown files used to analyze mothe
 The repository is organized into folders representing key analysis stages:
 
 1. Function: Shared functions used across scripts.
-2. Data Prep & Table 1: Scripts for preparing data and summarizing participant characteristics presented in Table 1.
+2. Data Prep & Table 1: Scripts for preparing data and summarizing participant characteristics.
 3. Analysis: Scripts for analyzing data for each study Aim and in each cohort.
 ---
 **Description of Scripts:**
