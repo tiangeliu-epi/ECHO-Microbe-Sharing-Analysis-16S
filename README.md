@@ -57,6 +57,10 @@ Summarizes and visualizes FEAST results obtained in 5.1-5.4 scripts, and conduct
 
 Compares microbiota dissimilarity between child-biological mother and child-random mother dyads across 5 cohorts. Results are presented in Supplement Figure 3.
 
+12. 8_Maternal_abundant_genera.Rmd
+
+To plot the dominant genera of maternal fecal and vaginal microbiota in each cohort. Results are presented in Supplement Figure 2.
+
 ---
 **Data Availability**
 ---
