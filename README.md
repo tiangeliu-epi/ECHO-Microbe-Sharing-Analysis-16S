@@ -43,7 +43,7 @@ Estimates the contribution of biological vs. random mother to infant fecal micro
 
 8. 4_MARCH_ASV.Rmd
 
-Conducts the ASV sharing analysis in the MARCH cohort for Aim 1 and Aim 3. Results are presented in Figure 2 B0-B3 & C, upplement Figure 4 BO-B3 & C, and Supplement Figure 6 A1-A3. This script also analyzes the sharing of Bifidobacterium and Bacteroides in the MARCH cohort, results of which are presented in Figure 4, Supplement Figure 7, and Supplement Figure 8.
+Conducts the ASV sharing analysis in the MARCH cohort for Aim 1 and Aim 3. Results are presented in Figure 2 B0-B3 & C, Supplement Figure 4 BO-B3 & C, and Supplement Figure 6 A1-A3. This script also analyzes the sharing of Bifidobacterium and Bacteroides in the MARCH cohort, results of which are presented in Figure 4, Supplement Figure 7, and Supplement Figure 8.
 
 9. 5.1_RESONANCE_FEAST.Rmd, 5.2_ROCHESTER_FEAST.Rmd, 5.3_VDAART_FEAST.Rmd, 5.4_WISC_FEAST.Rmd
 
