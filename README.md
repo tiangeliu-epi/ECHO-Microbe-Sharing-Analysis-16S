@@ -1,6 +1,6 @@
 # ECHO-Microbe-Sharing-Analysis-16S
 
-This repository contains the R scripts and RMarkdown files used to analyze mother-child microbe sharing in the ECHO study (manuscript currently under review). 
+This repository contains the R scripts and RMarkdown files used to analyze mother-child microbe sharing for the article: Liu, Tiange, et al. "Maternal Vaginal and Fecal Microbiota in Later Pregnancy Contribute to Child Fecal Microbiota Development in the ECHO Cohort." iScience (2025). 
 
 ---
 **Repository Structure:**
