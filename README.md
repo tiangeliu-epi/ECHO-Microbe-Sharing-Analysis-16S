@@ -1,6 +1,6 @@
 # ECHO-Microbe-Sharing-Analysis-16S
 
-This repository contains the R scripts and RMarkdown files used to analyze mother-child microbe sharing for the article: Liu, Tiange, et al. "Maternal Vaginal and Fecal Microbiota in Later Pregnancy Contribute to Child Fecal Microbiota Development in the ECHO Cohort." iScience (2025). 
+This repository contains the R scripts and RMarkdown files used to analyze mother-child microbe sharing for the article: Liu, Tiange, et al. "Maternal Vaginal and Fecal Microbiota in Later Pregnancy Contribute to Child Fecal Microbiota Development in the ECHO Cohort." iScience (2025). https://www.cell.com/iscience/fulltext/S2589-0042(25)00472-9 
 
 ---
 **Repository Structure:**
@@ -64,4 +64,4 @@ To plot the dominant genera of maternal fecal and vaginal microbiota in each coh
 ---
 **Data Availability**
 ---
-Select de-identified data from the ECHO Program are available through NICHD’s Data and Specimen Hub (DASH) (https://dash.nichd.nih.gov/). Information on study data not available on DASH, such as some Indigenous datasets, can be found on the ECHO study DASH webpage (https://dash.nichd.nih.gov/explore/study?q=echo&filters=%5b%5d&page=1&sortBy=relevance&asc=true&size=50). The 16S rRNA amplicon gene sequences are available upon reasonable request, which will be sent to the ECHO Committee for approval.
+Select de-identified data from the ECHO Program are available through NICHD’s Data and Specimen Hub (DASH) (https://dash.nichd.nih.gov/). Information on study data not available on DASH, such as some Indigenous datasets, can be found on the ECHO study DASH webpage (https://dash.nichd.nih.gov/explore/study?q=echo&filters=%5b%5d&page=1&sortBy=relevance&asc=true&size=50). The 16S rRNA amplicon gene sequences are publicly available via accession numbers listed in the Key Resources Table in the published article. 
